@@ -1,4 +1,5 @@
 
+from email.mime import message
 import json
 import os
 
@@ -6,12 +7,15 @@ from dotenv import load_dotenv
 from confluent_kafka import (
     Consumer,
     KafkaError,
-    KafkaException
+    KafkaException,
+    error
 )
 
 from src.database.db import (
     initialize_database,
-    save_scan_event
+    save_scan_event,
+    update_scan_status,
+    get_scan_status
 )
 
 
@@ -101,18 +105,34 @@ def start_consumer():
                 )
 
                 # Save the scan and its dependencies
+                # 1. Save the scan and its dependencies.
                 inserted = save_scan_event(event)
 
                 if inserted:
-
-                    print("\nScan successfully saved in SQLite.")
-
+                    print("\nNew scan successfully saved in SQLite.")
                 else:
+                    print("\nDuplicate scan detected.")
 
-                    print("\nDuplicate scan detected. Already stored.")
+                # 2. Retrieve the current status.
+                current_status = get_scan_status(event["scan_id"])
 
-                # Display the event
+                if current_status is None:
+                    raise ValueError("Scan was not found in SQLite.")
+
+                # 3. Move a newly received scan to WAITING_ANALYSIS.
+                # This transition means it is ready for the analysis module.
+                if current_status == "RECEIVED":
+                    update_scan_status(
+                        scan_id=event["scan_id"],
+                        new_status="WAITING_ANALYSIS",
+                        details=(
+                            "Scan stored successfully. "
+                            "Waiting for vulnerability analysis."
+                        )
+                    )
+
                 process_scan_event(event)
+
 
                 # Commit only after successful database persistence.
                 consumer.commit(

@@ -320,9 +320,172 @@ def save_scan_event(event: dict) -> bool:
     finally:
         connection.close()
 
+ALLOWED_TRANSITIONS = {
+    "RECEIVED": {"WAITING_ANALYSIS", "FAILED"},
+
+    "WAITING_ANALYSIS": {"ANALYZED", "FAILED"},
+
+    "ANALYZED": {"WAITING_APPROVAL", "FAILED"},
+
+    "WAITING_APPROVAL": {
+        "APPROVED",
+        "REJECTED",
+        "FAILED"
+    },
+
+    "APPROVED": {"TESTING", "FAILED"},
+
+    "TESTING": {"COMPLETED", "FAILED"},
+
+    "REJECTED": set(),
+    "COMPLETED": set(),
+    "FAILED": set()
+}
+
+
 # --------------------------------------------------
 # 6. MAIN
 # --------------------------------------------------
+
+def update_scan_status(
+    scan_id: str,
+    new_status: str,
+    details: str = None
+) -> bool:
+
+    """
+    Update a scan status and record its history.
+
+    Returns:
+        True  -> status successfully updated.
+        False -> status was already the requested status.
+
+    Raises:
+        ValueError -> scan does not exist or transition is invalid.
+    """
+
+    new_status = new_status.strip().upper()
+
+    if new_status not in ALLOWED_TRANSITIONS:
+        raise ValueError(
+            f"Unknown status: {new_status}"
+        )
+
+    connection = get_connection()
+
+    try:
+
+        # Start an explicit transaction.
+        connection.execute("BEGIN IMMEDIATE")
+
+        # Retrieve the current status.
+        scan = connection.execute(
+            """
+            SELECT status
+            FROM scans
+            WHERE scan_id = ?
+            """,
+            (scan_id,)
+        ).fetchone()
+
+        if scan is None:
+            raise ValueError(
+                f"Scan not found: {scan_id}"
+            )
+
+        current_status = scan["status"]
+
+        # Avoid duplicate history entries.
+        if current_status == new_status:
+            connection.rollback()
+            return False
+
+        # Check whether the transition is allowed.
+        allowed = ALLOWED_TRANSITIONS[current_status]
+
+        if new_status not in allowed:
+
+            raise ValueError(
+                f"Invalid transition: "
+                f"{current_status} -> {new_status}"
+            )
+
+        now = get_current_timestamp()
+
+        # Update the current status.
+        connection.execute(
+            """
+            UPDATE scans
+            SET status = ?,
+                updated_at = ?
+            WHERE scan_id = ?
+            """,
+            (new_status, now, scan_id)
+        )
+
+        # Add an entry to the status history.
+        connection.execute(
+            """
+            INSERT INTO scan_status_history (
+                scan_id,
+                status,
+                changed_at,
+                details
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                scan_id,
+                new_status,
+                now,
+                details
+            )
+        )
+
+        connection.commit()
+
+        print(
+            f"Status updated: "
+            f"{current_status} -> {new_status}"
+        )
+
+        return True
+
+    except Exception:
+
+        connection.rollback()
+        raise
+
+    finally:
+
+        connection.close()
+
+
+
+def get_scan_status(scan_id: str):
+
+    """
+    Retrieve the current status of a scan.
+    """
+
+    connection = get_connection()
+
+    try:
+
+        result = connection.execute(
+            """
+            SELECT status
+            FROM scans
+            WHERE scan_id = ?
+            """,
+            (scan_id,)
+        ).fetchone()
+
+        return result["status"] if result else None
+
+    finally:
+
+        connection.close()
 
 if __name__ == "__main__":
 
