@@ -1,0 +1,5 @@
+streamlit
+confluent-kafka
+python-dotenv
+pytest
+packaging
