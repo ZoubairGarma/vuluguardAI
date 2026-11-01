@@ -1,0 +1,140 @@
+
+import json
+import os
+import uuid
+
+from datetime import datetime, timezone
+from typing import Any
+
+from dotenv import load_dotenv
+from confluent_kafka import Producer
+
+
+# Load configuration from the .env file
+load_dotenv()
+
+KAFKA_BROKER = os.getenv(
+    "KAFKA_BOOTSTRAP_SERVERS",
+    "localhost:9092"
+)
+
+KAFKA_TOPIC = os.getenv(
+    "KAFKA_TOPIC_SCAN_REQUESTS",
+    "scan-requests"
+)
+
+
+def delivery_report(error, message):
+    """
+    Called by Kafka after message delivery.
+    """
+    if error is not None:
+        print(f"Message delivery failed: {error}")
+    else:
+        print(
+            f"Message successfully delivered "
+            f"to topic={message.topic()}, "
+            f"partition={message.partition()}"
+        )
+
+
+def build_scan_event(
+    project_name: str,
+    dependencies: list[dict[str, str]]
+) -> dict[str, Any]:
+    """
+    Build a standardized scan request event.
+    """
+
+    if not project_name.strip():
+        raise ValueError("Project name cannot be empty.")
+
+    if not dependencies:
+        raise ValueError("At least one dependency is required.")
+
+    for dependency in dependencies:
+        required_fields = {"ecosystem", "name", "version"}
+
+        if not required_fields.issubset(dependency):
+            raise ValueError(
+                "Each dependency must contain "
+                "ecosystem, name and version."
+            )
+
+    event = {
+        "scan_id": str(uuid.uuid4()),
+        "event_type": "scan_request",
+        "schema_version": "1.0",
+        "project_name": project_name,
+        "submitted_at": datetime.now(
+            timezone.utc
+        ).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "dependencies": dependencies
+    }
+
+    return event
+
+
+def publish_scan_request(
+    project_name: str,
+    dependencies: list[dict[str, str]]
+) -> dict[str, Any]:
+    """
+    Publish a scan request to Kafka.
+    """
+
+    producer = Producer({
+        "bootstrap.servers": KAFKA_BROKER
+    })
+
+    event = build_scan_event(
+        project_name,
+        dependencies
+    )
+
+    try:
+        producer.produce(
+            topic=KAFKA_TOPIC,
+            key=event["scan_id"],
+            value=json.dumps(event),
+            callback=delivery_report
+        )
+
+        # Process delivery callbacks and wait for confirmation.
+        remaining = producer.flush(timeout=10)
+
+        if remaining > 0:
+            raise TimeoutError(
+                f"{remaining} message(s) not delivered."
+            )
+
+        print("\nPublished event:")
+        print(json.dumps(event, indent=4))
+
+        return event
+
+    except Exception:
+        producer.flush(timeout=5)
+        raise
+
+
+if __name__ == "__main__":
+
+    # Simulated dependencies for our first test
+    sample_dependencies = [
+        {
+            "ecosystem": "PyPI",
+            "name": "requests",
+            "version": "2.31.0"
+        },
+        {
+            "ecosystem": "PyPI",
+            "name": "flask",
+            "version": "3.0.0"
+        }
+    ]
+
+    publish_scan_request(
+        project_name="demo-python-project",
+        dependencies=sample_dependencies
+    )
