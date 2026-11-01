@@ -1,0 +1,8 @@
+# Simulated dependency scan
+
+requests==2.31.0
+flask==3.0.0
+pandas==2.2.0
+
+# Unpinned dependency example
+numpy>=1.25
