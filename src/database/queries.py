@@ -120,3 +120,104 @@ def get_scan_history(
 
     finally:
         connection.close()
+
+import json
+
+
+def get_scan_details(scan_id: str):
+    """
+    Retrieve all information related to one scan.
+
+    Returns:
+        A dictionary containing:
+        - scan information
+        - dependencies
+        - status history
+        - original Kafka event
+
+        Returns None if the scan does not exist.
+    """
+
+    connection = get_connection()
+
+    try:
+
+        # 1. Retrieve general scan information
+        scan_row = connection.execute(
+            """
+            SELECT
+                scan_id,
+                project_name,
+                submitted_at,
+                received_at,
+                status,
+                updated_at,
+                event_json
+            FROM scans
+            WHERE scan_id = ?
+            """,
+            (scan_id,)
+        ).fetchone()
+
+        if scan_row is None:
+            return None
+
+        scan = dict(scan_row)
+
+        # 2. Retrieve all dependencies
+        dependency_rows = connection.execute(
+            """
+            SELECT
+                dependency_id,
+                ecosystem,
+                name,
+                version
+            FROM dependencies
+            WHERE scan_id = ?
+            ORDER BY name
+            """,
+            (scan_id,)
+        ).fetchall()
+
+        dependencies = [
+            dict(row) for row in dependency_rows
+        ]
+
+        # 3. Retrieve status history
+        history_rows = connection.execute(
+            """
+            SELECT
+                history_id,
+                status,
+                changed_at,
+                details
+            FROM scan_status_history
+            WHERE scan_id = ?
+            ORDER BY history_id ASC
+            """,
+            (scan_id,)
+        ).fetchall()
+
+        status_history = [
+            dict(row) for row in history_rows
+        ]
+
+        # 4. Decode original Kafka event
+        try:
+            event = json.loads(scan["event_json"])
+
+        except (json.JSONDecodeError, TypeError):
+            event = {
+                "raw_event": scan["event_json"],
+                "error": "Unable to decode the original event."
+            }
+
+        return {
+            "scan": scan,
+            "dependencies": dependencies,
+            "status_history": status_history,
+            "event": event
+        }
+
+    finally:
+        connection.close()
