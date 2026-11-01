@@ -20,3 +20,11 @@ data/processed/*
 # Generated reports and logs
 reports/
 *.log
+# SQLite database
+*.db
+*.sqlite
+*.sqlite3
+
+# SQLite journal files
+*.db-wal
+*.db-shm

@@ -3,10 +3,18 @@ import json
 import os
 
 from dotenv import load_dotenv
-from confluent_kafka import Consumer, KafkaError, KafkaException
+from confluent_kafka import (
+    Consumer,
+    KafkaError,
+    KafkaException
+)
+
+from src.database.db import (
+    initialize_database,
+    save_scan_event
+)
 
 
-# Load configuration
 load_dotenv()
 
 KAFKA_BROKER = os.getenv(
@@ -27,19 +35,10 @@ KAFKA_GROUP_ID = os.getenv(
 
 def process_scan_event(event: dict):
     """
-    Process the received scan request.
-    For now, we only validate and display it.
+    Display the received scan request.
     """
 
-    if event.get("event_type") != "scan_request":
-        print("Unknown event type. Ignoring message.")
-        return
-
     dependencies = event.get("dependencies", [])
-
-    if not dependencies:
-        print("Scan request contains no dependencies.")
-        return
 
     print("\n" + "=" * 55)
     print("NEW VULNGUARD SCAN REQUEST")
@@ -47,11 +46,11 @@ def process_scan_event(event: dict):
 
     print(f"Scan ID: {event.get('scan_id')}")
     print(f"Project: {event.get('project_name')}")
-    print(f"Submitted at: {event.get('submitted_at')}")
 
-    print("\nDependencies to analyze:")
+    print("\nDependencies:")
 
     for dependency in dependencies:
+
         print(
             f"- {dependency['name']} "
             f"== {dependency['version']} "
@@ -62,9 +61,9 @@ def process_scan_event(event: dict):
 
 
 def start_consumer():
-    """
-    Subscribe to Kafka and receive scan requests.
-    """
+
+    # Initialize the database before consuming messages.
+    initialize_database()
 
     consumer = Consumer({
         "bootstrap.servers": KAFKA_BROKER,
@@ -79,6 +78,7 @@ def start_consumer():
     print("Waiting for scan requests... Press Ctrl+C to stop.")
 
     try:
+
         while True:
 
             message = consumer.poll(timeout=1.0)
@@ -94,35 +94,56 @@ def start_consumer():
                 raise KafkaException(message.error())
 
             try:
+
+                # Decode the Kafka message
                 event = json.loads(
                     message.value().decode("utf-8")
                 )
 
+                # Save the scan and its dependencies
+                inserted = save_scan_event(event)
+
+                if inserted:
+
+                    print("\nScan successfully saved in SQLite.")
+
+                else:
+
+                    print("\nDuplicate scan detected. Already stored.")
+
+                # Display the event
                 process_scan_event(event)
 
-                # Commit only after successful processing.
+                # Commit only after successful database persistence.
                 consumer.commit(
                     message=message,
                     asynchronous=False
                 )
 
+                print("Kafka message successfully committed.")
+
             except (json.JSONDecodeError, UnicodeDecodeError) as error:
+
                 print(f"Invalid JSON message: {error}")
 
-                # For this development prototype, skip malformed messages.
+                # Temporary development policy:
+                # skip malformed messages.
+                # We will improve this with an error topic later.
                 consumer.commit(
                     message=message,
                     asynchronous=False
                 )
 
     except KeyboardInterrupt:
+
         print("\nConsumer stopped by user.")
 
     finally:
+
         consumer.close()
+
         print("Kafka connection closed.")
 
 
 if __name__ == "__main__":
     start_consumer()
-
