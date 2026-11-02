@@ -1,9 +1,13 @@
 
+import pytest
+
 from src.database.db import (
     initialize_database,
     save_scan_event,
     update_scan_status,
-    get_scan_status
+    get_scan_status,
+    get_scan_history,
+    mark_scan_failed,
 )
 
 from datetime import datetime, timezone
@@ -36,6 +40,48 @@ def create_test_scan():
     save_scan_event(event)
 
     return scan_id
+
+
+def test_duplicate_scan_is_rejected():
+    initialize_database()
+
+    scan_id = str(uuid.uuid4())
+    event = {
+        "scan_id": scan_id,
+        "event_type": "scan_request",
+        "project_name": "duplicate-check",
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+        "dependencies": [
+            {
+                "ecosystem": "PyPI",
+                "name": "requests",
+                "version": "2.31.0",
+            }
+        ],
+    }
+
+    assert save_scan_event(event) is True
+    assert save_scan_event(event) is False
+
+
+def test_invalid_transition_raises_value_error():
+    scan_id = create_test_scan()
+
+    with pytest.raises(ValueError, match="Invalid transition"):
+        update_scan_status(scan_id, "COMPLETED", "Invalid test transition.")
+
+
+def test_failed_status_is_recorded_in_history():
+    scan_id = create_test_scan()
+
+    update_scan_status(scan_id, "WAITING_ANALYSIS", "Waiting for analysis.")
+    mark_scan_failed(scan_id, "Analysis crashed after partial processing.")
+
+    history = get_scan_history(scan_id)
+    statuses = [entry["status"] for entry in history]
+
+    assert statuses == ["RECEIVED", "WAITING_ANALYSIS", "FAILED"]
+    assert get_scan_status(scan_id) == "FAILED"
 
 
 if __name__ == "__main__":

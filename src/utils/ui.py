@@ -79,6 +79,62 @@ def apply_app_styles():
             font-weight: 750;
         }
 
+        .vg-panel {
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid var(--vg-line);
+            border-radius: 14px;
+            padding: 1rem 1.1rem;
+            box-shadow: 0 4px 14px rgba(17, 24, 39, 0.04);
+            height: 100%;
+        }
+
+        .vg-panel-title {
+            font-size: 0.76rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--vg-muted);
+            margin-bottom: 0.7rem;
+        }
+
+        .vg-health-value {
+            font-size: 1.1rem;
+            font-weight: 750;
+            margin: 0;
+            color: var(--vg-ink);
+        }
+
+        .vg-status-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 999px;
+            padding: 0.35rem 0.7rem;
+            font-size: 0.78rem;
+            font-weight: 700;
+            margin-top: 0.55rem;
+        }
+
+        .vg-pill-healthy {
+            background: rgba(15, 159, 146, 0.12);
+            color: #0d7a70;
+        }
+
+        .vg-pill-warning {
+            background: rgba(245, 158, 11, 0.13);
+            color: #a16207;
+        }
+
+        .vg-pill-danger {
+            background: rgba(239, 68, 68, 0.12);
+            color: #b91c1c;
+        }
+
+        .vg-pill-neutral {
+            background: rgba(148, 163, 184, 0.15);
+            color: #475569;
+        }
+
         div.stButton > button,
         div[data-testid="stFormSubmitButton"] > button {
             border-radius: 9px;
