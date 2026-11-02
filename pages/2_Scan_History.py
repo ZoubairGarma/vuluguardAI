@@ -1,21 +1,26 @@
 
+import importlib
 import streamlit as st
 
 from src.database.queries import (
     get_scan_summary,
     get_scan_history
 )
+from src.utils import ui
+
+importlib.reload(ui)
 
 
-st.title("Scan History")
+st.set_page_config(
+    page_title="Scan History | VulnGuard AI",
+    page_icon="🛡️",
+    layout="wide",
+)
 
-st.markdown(
-    """
-    Monitor all dependency scans submitted to VulnGuard AI.
-
-    This page displays the actual scan records stored
-    in the local SQLite database.
-    """
+ui.apply_app_styles()
+ui.render_page_header(
+    "Scan history",
+    "Search and review dependency scan requests recorded in the local workspace.",
 )
 
 st.divider()
@@ -25,7 +30,7 @@ st.divider()
 # 1. REFRESH DATA
 # ---------------------------------------------
 
-if st.button("Refresh history"):
+if st.button("Refresh history", help="Reload the scan summary and records."):
     st.rerun()
 
 
@@ -35,7 +40,7 @@ if st.button("Refresh history"):
 
 summary = get_scan_summary()
 
-st.subheader("Scan Overview")
+st.subheader("Scan overview")
 
 col1, col2, col3, col4 = st.columns(4)
 
@@ -64,7 +69,7 @@ col4.metric(
 # 3. STATUS DISTRIBUTION
 # ---------------------------------------------
 
-st.subheader("Scan Status Distribution")
+st.subheader("Status distribution")
 
 status_data = {
     status: count
@@ -88,7 +93,7 @@ st.divider()
 # 4. FILTERS
 # ---------------------------------------------
 
-st.subheader("Search and Filter Scans")
+st.subheader("Find a scan")
 
 all_statuses = [
     "All statuses",
@@ -109,14 +114,14 @@ with col1:
 
     selected_status = st.selectbox(
         "Filter by status",
-        all_statuses
+        all_statuses,
     )
 
 with col2:
 
     search_term = st.text_input(
         "Search project or scan ID",
-        placeholder="Enter a project name or scan ID"
+        placeholder="Enter a project name or scan ID",
     )
 
 
@@ -140,7 +145,7 @@ scans = get_scan_history(
 # 6. DISPLAY SCAN TABLE
 # ---------------------------------------------
 
-st.subheader("Scan Records")
+st.subheader("Scan records")
 
 st.caption(
     f"{len(scans)} scan(s) found. Maximum displayed: 200."

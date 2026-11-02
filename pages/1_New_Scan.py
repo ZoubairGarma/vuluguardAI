@@ -1,33 +1,46 @@
 
+import importlib
 import streamlit as st
 
 from src.utils.requirements_parser import parse_requirements_text
 from src.streaming.producer import publish_scan_request
+from src.utils import ui
+
+importlib.reload(ui)
 
 
-st.title("New Dependency Scan")
+st.set_page_config(
+    page_title="New Scan | VulnGuard AI",
+    page_icon="🛡️",
+    layout="wide",
+)
 
-st.markdown(
-    """
-    Upload your Python project's `requirements.txt`.
-    VulnGuard AI will extract the dependencies and
-    submit a scan request to Kafka.
-    """
+ui.apply_app_styles()
+ui.render_page_header(
+    "Start a dependency scan",
+    "Upload a Python requirements file to review its pinned packages and submit a scan request.",
 )
 
 st.divider()
 
-# Project information
-project_name = st.text_input(
-    "Project name",
-    placeholder="my-python-project"
-)
+project_col, upload_col = st.columns([1, 1.35], gap="large")
 
-# Upload requirements file
-uploaded_file = st.file_uploader(
-    "Upload requirements.txt",
-    type=["txt"]
-)
+with project_col:
+    st.subheader("1. Identify the project")
+    project_name = st.text_input(
+        "Project name",
+        placeholder="my-python-project",
+        help="A name to help you recognize this scan in the history.",
+    )
+
+with upload_col:
+    st.subheader("2. Add dependencies")
+    uploaded_file = st.file_uploader(
+        "Upload requirements.txt",
+        type=["txt"],
+        help="For this prototype, dependencies must use exact versions, such as requests==2.31.0.",
+    )
+    st.caption("Exact version pins (==) are required for this scan prototype.")
 
 if uploaded_file is not None:
 
@@ -39,7 +52,9 @@ if uploaded_file is not None:
         dependencies = result["dependencies"]
         skipped = result["skipped"]
 
-        st.subheader("Dependency Analysis")
+        st.divider()
+        st.subheader("3. Review detected dependencies")
+        st.caption("Check the parsed package list before submitting the request.")
 
         col1, col2 = st.columns(2)
 
@@ -100,7 +115,7 @@ if uploaded_file is not None:
         )
 
         if st.button(
-            "Start Scan",
+            "Submit scan request",
             type="primary",
             disabled=not scan_allowed
         ):
