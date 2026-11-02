@@ -1,3 +1,4 @@
+
 import json
 from pathlib import Path
 
@@ -10,11 +11,19 @@ PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 
 def parse_id_list(value):
     """Convert a JSON list or delimited string into a list of IDs."""
-    if pd.isna(value):
+
+    if value is None:
         return []
 
     if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
+        return [
+            str(item).strip()
+            for item in value
+            if str(item).strip()
+        ]
+
+    if pd.isna(value):
+        return []
 
     value = str(value).strip()
 
@@ -23,14 +32,17 @@ def parse_id_list(value):
 
     try:
         parsed = json.loads(value)
+
         if isinstance(parsed, list):
             return [
                 str(item).strip()
                 for item in parsed
                 if str(item).strip()
             ]
+
         if isinstance(parsed, str):
             return [parsed.strip()] if parsed.strip() else []
+
     except (json.JSONDecodeError, TypeError):
         pass
 
@@ -46,6 +58,7 @@ def parse_id_list(value):
 
 def load_datasets():
     """Load the four processed datasets."""
+
     files = {
         "cve": "cve_features.csv",
         "severity": "osv_severity.csv",
@@ -68,27 +81,6 @@ def load_datasets():
     return datasets
 
 
-def add_ransomware_features(features):
-    """Encode ransomware information without treating Unknown as No."""
-    values = (
-        features["known_ransomware_campaign_use"]
-        .fillna("Unknown")
-        .astype(str)
-        .str.strip()
-        .str.lower()
-    )
-
-    features["ransomware_use_known"] = values.isin(
-        ["yes", "no"]
-    ).astype(int)
-
-    features["ransomware_campaign_use"] = values.map(
-        {"yes": 1, "no": 0}
-    )
-
-    return features
-
-
 def build_package_features(features, records, packages):
     """Aggregate package and ecosystem information by CVE."""
 
@@ -99,15 +91,23 @@ def build_package_features(features, records, packages):
 
     # Connect each OSV record to its CVEs.
     cve_osv = records[["osv_id", "cve_id_list"]].explode("cve_id_list")
-    cve_osv = cve_osv.rename(columns={"cve_id_list": "cve_id"})
+
+    cve_osv = cve_osv.rename(
+        columns={"cve_id_list": "cve_id"}
+    )
+
     cve_osv = cve_osv.dropna(subset=["cve_id"])
 
-    cve_osv["cve_id"] = cve_osv["cve_id"].astype(str).str.upper()
+    cve_osv["cve_id"] = (
+        cve_osv["cve_id"].astype(str).str.upper().str.strip()
+    )
+
+    cve_osv = cve_osv[cve_osv["cve_id"] != ""]
 
     # Keep unique CVE-to-OSV relationships.
     cve_osv = cve_osv.drop_duplicates(["cve_id", "osv_id"])
 
-    # Avoid counting exact duplicate package rows twice in derived features.
+    # Avoid counting exact duplicate package rows twice.
     package_keys = [
         "osv_id",
         "ecosystem",
@@ -140,19 +140,19 @@ def build_package_features(features, records, packages):
         print("Warning: no CVE-to-package relationships were found.")
         return features
 
-    # Unique package combinations per CVE.
+    # Count distinct ecosystems per CVE.
+    # affected_package_count is already available in cve_features.csv.
+    # linked_package_count and linked_osv_count are intentionally excluded.
     package_counts = (
         linked.groupby("cve_id")
         .agg(
-            linked_package_count=("package_name", "nunique"),
             ecosystem_count=("ecosystem", "nunique"),
-            linked_osv_count=("osv_id", "nunique"),
         )
     )
 
     features = features.join(package_counts, on="cve_id")
 
-    # Count packages per ecosystem for each CVE.
+    # Count distinct packages per ecosystem for each CVE.
     ecosystem_counts = (
         linked.groupby(["cve_id", "ecosystem"])["package_name"]
         .nunique()
@@ -160,7 +160,8 @@ def build_package_features(features, records, packages):
     )
 
     ecosystem_counts.columns = [
-        "ecosystem_" + str(col).lower().replace(".", "_").replace("-", "_")
+        "ecosystem_"
+        + str(col).lower().replace(".", "_").replace("-", "_")
         + "_package_count"
         for col in ecosystem_counts.columns
     ]
@@ -181,10 +182,14 @@ def build_cvss_features(features, severity):
     severity = severity.dropna(subset=["cve_id_list"])
 
     severity["cve_id"] = (
-        severity["cve_id_list"].astype(str).str.upper()
+        severity["cve_id_list"].astype(str).str.upper().str.strip()
     )
 
-    severity["severity_type"] = severity["severity_type"].astype(str)
+    severity = severity[severity["cve_id"] != ""]
+
+    severity["severity_type"] = (
+        severity["severity_type"].astype(str).str.strip().str.upper()
+    )
 
     # Each CVSS entry is linked to each CVE listed in its OSV record.
     severity = severity.drop_duplicates(
@@ -195,6 +200,7 @@ def build_cvss_features(features, severity):
         ("CVSS_V3", "cvss_v3"),
         ("CVSS_V4", "cvss_v4"),
     ]:
+
         subset = severity[
             severity["severity_type"] == version_type
         ].copy()
@@ -228,15 +234,8 @@ def build_cvss_features(features, severity):
                 "exploit_maturity",
             ]
 
-        # Number of CVSS entries of this version per CVE.
-        entry_counts = subset.groupby("cve_id").size()
-
-        features = features.join(
-            entry_counts.rename(f"{prefix}_entry_count_derived"),
-            on="cve_id",
-        )
-
         for metric in metrics:
+
             if metric not in subset.columns:
                 continue
 
@@ -268,7 +267,7 @@ def build_cvss_features(features, severity):
 
             features = features.join(counts, on="cve_id")
 
-    # Presence flags are useful even when a CVSS metric is unavailable.
+    # Presence flags are useful even when CVSS metrics are unavailable.
     features["has_cvss_v3"] = (
         features["cvss_v3_entry_count"].fillna(0) > 0
     ).astype(int)
@@ -281,7 +280,9 @@ def build_cvss_features(features, severity):
 
 
 def main():
+
     print("\nLoading processed datasets...")
+
     data = load_datasets()
 
     features = data["cve"].copy()
@@ -293,11 +294,14 @@ def main():
     if features["cve_id"].duplicated().any():
         raise ValueError("Duplicate CVE IDs found in cve_features.csv")
 
+    if (features["cve_id"] == "").any():
+        raise ValueError("Empty CVE IDs found in cve_features.csv")
+
     # Convert boolean fields to numeric values.
     features["is_kev"] = features["is_kev"].astype(int)
     features["has_epss"] = features["has_epss"].astype(int)
 
-    # Ensure EPSS values remain numeric and missing scores remain NaN.
+    # Preserve missing EPSS values as NaN.
     features["epss_score"] = pd.to_numeric(
         features["epss_score"], errors="coerce"
     )
@@ -306,11 +310,9 @@ def main():
         features["epss_percentile"], errors="coerce"
     )
 
-    # Add ransomware indicators.
-
-
     # Add package and ecosystem features.
     print("\nBuilding package features...")
+
     features = build_package_features(
         features,
         data["records"],
@@ -319,6 +321,7 @@ def main():
 
     # Add CVSS metric features.
     print("\nBuilding CVSS features...")
+
     features = build_cvss_features(
         features,
         data["severity"],
@@ -342,34 +345,61 @@ def main():
 
     # Fill missing count features with zero.
     count_columns = [
-
         col for col in features.columns
         if "_count" in col
     ]
 
     features[count_columns] = features[count_columns].fillna(0)
 
+    # Remove unused ransomware features.
     features = features.drop(
-
         columns=[
             "ransomware_use_known",
             "ransomware_campaign_use",
         ],
         errors="ignore",
-    )    
+    )
+
+    # Ensure redundant features are not included.
+    redundant_columns = [
+        "linked_osv_count",
+        "linked_package_count",
+        "cvss_v3_entry_count_derived",
+        "cvss_v4_entry_count_derived",
+    ]
+
+    features = features.drop(
+        columns=redundant_columns,
+        errors="ignore",
+    )
 
     # Keep CVE identifier as the row key, not as an ML feature.
-    features = features.sort_values("cve_id").reset_index(drop=True)
+    features = (
+        features.sort_values("cve_id")
+        .reset_index(drop=True)
+    )
 
     output_path = PROCESSED_DIR / "ml_features.csv"
+
     features.to_csv(output_path, index=False)
+
+    numeric_columns = features.select_dtypes(
+        include="number"
+    ).columns
 
     print("\nFeature engineering completed.")
     print(f"Output: {output_path}")
     print(f"CVEs: {len(features):,}")
     print(f"Total columns: {len(features.columns):,}")
-    print(f"Numeric feature columns: {len(features.select_dtypes(include='number').columns):,}")
-    print(f"Missing EPSS scores preserved: {features['epss_score'].isna().sum():,}")
+    print(f"Numeric feature columns: {len(numeric_columns):,}")
+    print(
+        "Missing EPSS scores preserved: "
+        f"{features['epss_score'].isna().sum():,}"
+    )
+    print(
+        "Missing EPSS percentiles preserved: "
+        f"{features['epss_percentile'].isna().sum():,}"
+    )
     print(f"KEV CVEs: {features['is_kev'].sum():,}")
     print(f"CVEs with CVSS v3: {features['has_cvss_v3'].sum():,}")
     print(f"CVEs with CVSS v4: {features['has_cvss_v4'].sum():,}")
