@@ -38,12 +38,18 @@ def analyze_coverage():
     ecosystems = Counter()
     unique_packages = set()
     affected_entries = 0
+    unreadable_osv_files = []
 
     print("ANALYZING OSV RECORDS...")
 
     for path in osv_files:
-        with path.open("r", encoding="utf-8") as file:
-            record = json.load(file)
+        try:
+            with path.open("r", encoding="utf-8") as file:
+                record = json.load(file)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            unreadable_osv_files.append((path.name, str(error)))
+            print(f"Skipping unreadable OSV record {path.name}: {error}")
+            continue
 
         aliases = record.get("aliases", [])
         cves = {
@@ -80,6 +86,8 @@ def analyze_coverage():
 
     print("\nOSV:")
     print("Total records:", len(osv_files))
+    print("Readable records:", len(osv_files) - len(unreadable_osv_files))
+    print("Unreadable records:", len(unreadable_osv_files))
     print("Records with CVE aliases:", osv_records_with_cve)
     print("Records without CVE aliases:", osv_records_without_cve)
     print("Unique CVEs extracted:", len(all_osv_cves))
