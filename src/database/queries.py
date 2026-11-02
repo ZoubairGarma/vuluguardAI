@@ -1,5 +1,79 @@
 
+import os
+
 from src.database.db import get_connection
+
+
+def get_system_health():
+    """
+    Return the current status of the main local system dependencies.
+    """
+
+    health = {
+        "kafka": "Unavailable",
+        "sqlite": "Unavailable",
+        "consumer": "Not monitored",
+    }
+
+    try:
+        connection = get_connection()
+        connection.execute("SELECT 1").fetchone()
+        health["sqlite"] = "Healthy"
+    except Exception:
+        health["sqlite"] = "Unavailable"
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+    try:
+        from confluent_kafka import Producer
+
+        broker = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+        producer = Producer({"bootstrap.servers": broker})
+        producer.list_topics(timeout=2)
+        health["kafka"] = "Healthy"
+    except Exception:
+        health["kafka"] = "Unavailable"
+
+    if health["kafka"] == "Healthy" and health["sqlite"] == "Healthy":
+        health["consumer"] = "Listening"
+    elif health["kafka"] == "Healthy":
+        health["consumer"] = "Waiting for DB"
+    else:
+        health["consumer"] = "Offline"
+
+    return health
+
+
+def get_recent_failures(limit=5):
+    """
+    Return recent failed or rejected scan lifecycle entries.
+    """
+
+    connection = get_connection()
+
+    try:
+        rows = connection.execute(
+            """
+            SELECT
+                scan_id,
+                status,
+                changed_at,
+                details
+            FROM scan_status_history
+            WHERE status IN ('FAILED', 'REJECTED')
+            ORDER BY history_id DESC
+            LIMIT ?
+            """,
+            (limit,)
+        ).fetchall()
+
+        return [dict(row) for row in rows]
+
+    finally:
+        connection.close()
 
 
 def get_scan_summary():

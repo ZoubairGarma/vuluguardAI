@@ -179,28 +179,26 @@ def get_current_timestamp():
     ).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def save_scan_event(event: dict) -> bool:
+def validate_scan_event(event: dict):
     """
-    Save a Kafka scan event and its dependencies in SQLite.
-
-    Returns:
-        True  -> new scan successfully inserted.
-        False -> scan already exists (duplicate event).
+    Validate the structure of a scan event before inserting it.
     """
 
-    # 1. Validate the event structure
+    if not isinstance(event, dict):
+        raise ValueError("Scan event must be a dictionary.")
+
     scan_id = event.get("scan_id")
     project_name = event.get("project_name")
     submitted_at = event.get("submitted_at")
     dependencies = event.get("dependencies")
 
-    if not scan_id:
+    if not scan_id or not str(scan_id).strip():
         raise ValueError("Missing scan_id.")
 
     if event.get("event_type") != "scan_request":
         raise ValueError("Invalid event type.")
 
-    if not project_name or not project_name.strip():
+    if not project_name or not str(project_name).strip():
         raise ValueError("Missing project name.")
 
     if not submitted_at:
@@ -209,9 +207,7 @@ def save_scan_event(event: dict) -> bool:
     if not isinstance(dependencies, list) or not dependencies:
         raise ValueError("No dependencies provided.")
 
-    # 2. Validate each dependency
     for dependency in dependencies:
-
         if not isinstance(dependency, dict):
             raise ValueError("Invalid dependency format.")
 
@@ -222,6 +218,30 @@ def save_scan_event(event: dict) -> bool:
                 raise ValueError(
                     f"Missing or invalid dependency field: {field}"
                 )
+
+    return {
+        "scan_id": str(scan_id).strip(),
+        "project_name": str(project_name).strip(),
+        "submitted_at": submitted_at,
+        "dependencies": dependencies,
+    }
+
+
+def save_scan_event(event: dict) -> bool:
+    """
+    Save a Kafka scan event and its dependencies in SQLite.
+
+    Returns:
+        True  -> new scan successfully inserted.
+        False -> scan already exists (duplicate event).
+    """
+
+    normalized_event = validate_scan_event(event)
+
+    scan_id = normalized_event["scan_id"]
+    project_name = normalized_event["project_name"]
+    submitted_at = normalized_event["submitted_at"]
+    dependencies = normalized_event["dependencies"]
 
     # 3. Prepare database values
     received_at = get_current_timestamp()
@@ -486,6 +506,71 @@ def get_scan_status(scan_id: str):
     finally:
 
         connection.close()
+
+
+def get_scan_history(scan_id: str) -> list[dict]:
+    """
+    Return the ordered lifecycle history for a scan.
+    """
+
+    if not scan_id or not str(scan_id).strip():
+        raise ValueError("Missing scan_id.")
+
+    connection = get_connection()
+
+    try:
+        rows = connection.execute(
+            """
+            SELECT history_id, scan_id, status, changed_at, details
+            FROM scan_status_history
+            WHERE scan_id = ?
+            ORDER BY history_id ASC
+            """,
+            (str(scan_id).strip(),)
+        ).fetchall()
+
+        return [dict(row) for row in rows]
+
+    finally:
+        connection.close()
+
+
+def get_scan_status_history(scan_id: str) -> list[dict]:
+    """
+    Backwards-compatible alias for status lifecycle history.
+    """
+
+    return get_scan_history(scan_id)
+
+
+def mark_scan_failed(scan_id: str, details: str = None) -> bool:
+    """
+    Mark a scan as failed after an internal processing error or partial retry.
+    """
+
+    if not scan_id or not str(scan_id).strip():
+        raise ValueError("Missing scan_id.")
+
+    current_status = get_scan_status(scan_id)
+
+    if current_status is None:
+        raise ValueError(f"Scan not found: {scan_id}")
+
+    if current_status in {"REJECTED", "COMPLETED", "FAILED"}:
+        raise ValueError(
+            f"Cannot fail a scan already in terminal state: {current_status}"
+        )
+
+    if "FAILED" not in ALLOWED_TRANSITIONS.get(current_status, set()):
+        raise ValueError(
+            f"Invalid transition: {current_status} -> FAILED"
+        )
+
+    return update_scan_status(
+        scan_id=scan_id,
+        new_status="FAILED",
+        details=details or "Scan marked failed after processing error or retry failure."
+    )
 
 if __name__ == "__main__":
 
