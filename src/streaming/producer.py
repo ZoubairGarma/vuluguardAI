@@ -23,6 +23,11 @@ KAFKA_TOPIC = os.getenv(
     "scan-requests"
 )
 
+KAFKA_ERROR_TOPIC = os.getenv(
+    "KAFKA_TOPIC_SCAN_ERRORS",
+    "scan-errors"
+)
+
 
 def delivery_report(error, message):
     """
@@ -75,6 +80,30 @@ def build_scan_event(
     return event
 
 
+def build_scan_error_event(
+    source_topic: str,
+    raw_payload: Any,
+    error_type: str,
+    details: str,
+) -> dict[str, Any]:
+    """
+    Build a standardized dead-letter event for invalid Kafka payloads.
+    """
+
+    return {
+        "error_id": str(uuid.uuid4()),
+        "event_type": "scan_error",
+        "schema_version": "1.0",
+        "source_topic": source_topic,
+        "error_type": error_type,
+        "raw_payload": raw_payload,
+        "details": details,
+        "received_at": datetime.now(
+            timezone.utc
+        ).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+
+
 def publish_scan_request(
     project_name: str,
     dependencies: list[dict[str, str]]
@@ -109,6 +138,52 @@ def publish_scan_request(
             )
 
         print("\nPublished event:")
+        print(json.dumps(event, indent=4))
+
+        return event
+
+    except Exception:
+        producer.flush(timeout=5)
+        raise
+
+
+def publish_scan_error(
+    source_topic: str,
+    raw_payload: Any,
+    error_type: str,
+    details: str,
+) -> dict[str, Any]:
+    """
+    Publish an invalid Kafka message to the configured dead-letter topic.
+    """
+
+    producer = Producer({
+        "bootstrap.servers": KAFKA_BROKER
+    })
+
+    event = build_scan_error_event(
+        source_topic=source_topic,
+        raw_payload=raw_payload,
+        error_type=error_type,
+        details=details,
+    )
+
+    try:
+        producer.produce(
+            topic=KAFKA_ERROR_TOPIC,
+            key=event["error_id"],
+            value=json.dumps(event),
+            callback=delivery_report
+        )
+
+        remaining = producer.flush(timeout=10)
+
+        if remaining > 0:
+            raise TimeoutError(
+                f"{remaining} error message(s) not delivered."
+            )
+
+        print("\nPublished dead-letter event:")
         print(json.dumps(event, indent=4))
 
         return event
