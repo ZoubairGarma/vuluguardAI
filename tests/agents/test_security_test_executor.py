@@ -100,3 +100,96 @@ def test_successful_execution_returns_results(executor, approved_plan):
     assert len(result["execution_results"]) == 1
     assert result["tests"][0]["execution_status"] == "COMPLETED"
     assert result["execution_results"][0]["package_name"] == "pip"
+
+
+
+def test_detects_affected_installed_version(executor, approved_plan, monkeypatch):
+    from src.agents import security_test_executor
+
+    monkeypatch.setattr(
+        security_test_executor.metadata,
+        "version",
+        lambda package: "1.0.0",
+    )
+
+    approved_plan["tests"][0]["evidence"]["affected_ranges"] = [
+        {
+            "type": "ECOSYSTEM",
+            "events": [
+                {"introduced": "0"},
+                {"fixed": "2.0.0"},
+            ],
+        }
+    ]
+
+    result = executor.execute(approved_plan)
+
+    assert result["execution_results"][0]["version_status"] == "AFFECTED"
+
+
+def test_detects_fixed_installed_version(executor, approved_plan, monkeypatch):
+    from src.agents import security_test_executor
+
+    monkeypatch.setattr(
+        security_test_executor.metadata,
+        "version",
+        lambda package: "2.0.0",
+    )
+
+    approved_plan["tests"][0]["evidence"]["affected_ranges"] = [
+        {
+            "type": "ECOSYSTEM",
+            "events": [
+                {"introduced": "0"},
+                {"fixed": "2.0.0"},
+            ],
+        }
+    ]
+
+    result = executor.execute(approved_plan)
+
+    assert result["execution_results"][0]["version_status"] == "NOT_AFFECTED"
+
+
+def test_returns_unknown_for_unrecognized_ranges(
+    executor, approved_plan, monkeypatch
+):
+    from src.agents import security_test_executor
+
+    monkeypatch.setattr(
+        security_test_executor.metadata,
+        "version",
+        lambda package: "1.5.0",
+    )
+
+    approved_plan["tests"][0]["evidence"]["affected_ranges"] = [
+        {
+            "type": "GIT",
+            "events": [
+                {"introduced": "abc123"},
+            ],
+        }
+    ]
+
+    result = executor.execute(approved_plan)
+
+    assert result["execution_results"][0]["version_status"] == "UNKNOWN"
+
+
+def test_detects_package_not_installed(executor, approved_plan, monkeypatch):
+    from src.agents import security_test_executor
+    from importlib import metadata
+
+    def package_not_found(package):
+        raise metadata.PackageNotFoundError(package)
+
+    monkeypatch.setattr(
+        security_test_executor.metadata,
+        "version",
+        package_not_found,
+    )
+
+    result = executor.execute(approved_plan)
+
+    assert result["execution_results"][0]["version_status"] == "NOT_INSTALLED"
+    assert result["execution_results"][0]["execution_status"] == "COMPLETED"
