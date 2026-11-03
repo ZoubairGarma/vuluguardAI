@@ -88,6 +88,32 @@ CREATE TABLE IF NOT EXISTS scan_status_history (
 );
 
 
+CREATE TABLE IF NOT EXISTS scan_results (
+
+    result_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    scan_id TEXT NOT NULL,
+
+    cve_id TEXT NOT NULL,
+
+    verified_facts_json TEXT NOT NULL,
+
+    llm_explanation TEXT,
+
+    created_at TEXT NOT NULL,
+
+    FOREIGN KEY (scan_id)
+        REFERENCES scans(scan_id)
+        ON DELETE CASCADE,
+
+    UNIQUE(scan_id, cve_id)
+);
+
+
+CREATE INDEX IF NOT EXISTS idx_scan_results_scan_id
+ON scan_results(scan_id);
+
+
 CREATE INDEX IF NOT EXISTS idx_scans_status
 ON scans(status);
 
@@ -339,6 +365,93 @@ def save_scan_event(event: dict) -> bool:
 
     finally:
         connection.close()
+
+def save_scan_result(
+    scan_id: str,
+    cve_id: str,
+    verified_facts: dict,
+    llm_explanation: str = None
+) -> bool:
+    """
+    Save verified vulnerability facts and the LLM explanation.
+
+    If the same CVE already exists for this scan, update its result.
+
+    Returns:
+        True -> result successfully saved.
+    """
+
+    if not isinstance(scan_id, str) or not scan_id.strip():
+        raise ValueError("Missing scan_id.")
+
+    if not isinstance(cve_id, str) or not cve_id.strip():
+        raise ValueError("Missing CVE ID.")
+
+    if not isinstance(verified_facts, dict):
+        raise ValueError("verified_facts must be a dictionary.")
+
+    if llm_explanation is not None and not isinstance(llm_explanation, str):
+        raise ValueError("llm_explanation must be a string or None.")
+
+    serialized_facts = json.dumps(
+        verified_facts,
+        ensure_ascii=False
+    )
+
+    now = get_current_timestamp()
+
+    connection = get_connection()
+
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+
+        scan = connection.execute(
+            """
+            SELECT scan_id
+            FROM scans
+            WHERE scan_id = ?
+            """,
+            (scan_id.strip(),)
+        ).fetchone()
+
+        if scan is None:
+            raise ValueError(f"Scan not found: {scan_id}")
+
+        connection.execute(
+            """
+            INSERT INTO scan_results (
+                scan_id,
+                cve_id,
+                verified_facts_json,
+                llm_explanation,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+
+            ON CONFLICT(scan_id, cve_id)
+            DO UPDATE SET
+                verified_facts_json = excluded.verified_facts_json,
+                llm_explanation = excluded.llm_explanation,
+                created_at = excluded.created_at
+            """,
+            (
+                scan_id.strip(),
+                cve_id.strip(),
+                serialized_facts,
+                llm_explanation,
+                now
+            )
+        )
+
+        connection.commit()
+        return True
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        connection.close()        
 
 ALLOWED_TRANSITIONS = {
     "RECEIVED": {"WAITING_ANALYSIS", "FAILED"},

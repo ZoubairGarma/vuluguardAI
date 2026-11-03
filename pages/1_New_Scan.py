@@ -5,6 +5,7 @@ import streamlit as st
 from src.utils.requirements_parser import parse_requirements_text
 from src.streaming.producer import publish_scan_request
 from src.utils import ui
+from src.utils.vulnerability_result_view import render_vulnerability_result
 
 importlib.reload(ui)
 

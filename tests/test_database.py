@@ -1,5 +1,5 @@
-
 import pytest
+import json
 
 
 def test_save_scan_event(test_database, sample_event):
@@ -144,4 +144,114 @@ def test_nonexistent_scan_status_update(test_database):
         test_database.update_scan_status(
             "nonexistent-scan",
             "WAITING_ANALYSIS"
+        )
+
+
+def test_save_scan_result(test_database, sample_event):
+    """
+    Verify that vulnerability results are saved correctly.
+    """
+
+    test_database.save_scan_event(sample_event)
+
+    verified_facts = {
+        "description": "A test vulnerability.",
+        "risk": {
+            "score": 85,
+            "level": "CRITICAL",
+            "is_kev": True
+        }
+    }
+
+    explanation = "This vulnerability requires immediate attention."
+
+    result = test_database.save_scan_result(
+        scan_id=sample_event["scan_id"],
+        cve_id="CVE-2026-12345",
+        verified_facts=verified_facts,
+        llm_explanation=explanation
+    )
+
+    assert result is True
+
+    connection = test_database.get_connection()
+
+    try:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM scan_results
+            WHERE scan_id = ?
+            AND cve_id = ?
+            """,
+            (sample_event["scan_id"], "CVE-2026-12345")
+        ).fetchone()
+
+        assert row is not None
+        assert row["llm_explanation"] == explanation
+        assert json.loads(row["verified_facts_json"]) == verified_facts
+        assert row["created_at"] is not None
+
+    finally:
+        connection.close()
+
+
+def test_save_scan_result_updates_existing_cve(
+    test_database,
+    sample_event
+):
+    """
+    Saving the same CVE twice must update the existing result.
+    """
+
+    test_database.save_scan_event(sample_event)
+
+    test_database.save_scan_result(
+        scan_id=sample_event["scan_id"],
+        cve_id="CVE-2026-12345",
+        verified_facts={"risk_score": 50},
+        llm_explanation="First explanation."
+    )
+
+    test_database.save_scan_result(
+        scan_id=sample_event["scan_id"],
+        cve_id="CVE-2026-12345",
+        verified_facts={"risk_score": 90},
+        llm_explanation="Updated explanation."
+    )
+
+    connection = test_database.get_connection()
+
+    try:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM scan_results
+            WHERE scan_id = ?
+            AND cve_id = ?
+            """,
+            (sample_event["scan_id"], "CVE-2026-12345")
+        ).fetchall()
+
+        assert len(rows) == 1
+        assert json.loads(rows[0]["verified_facts_json"]) == {
+            "risk_score": 90
+        }
+        assert rows[0]["llm_explanation"] == "Updated explanation."
+
+    finally:
+        connection.close()
+
+
+def test_save_scan_result_rejects_nonexistent_scan(test_database):
+    """
+    Results cannot be saved for a scan that does not exist.
+    """
+
+    with pytest.raises(ValueError, match="Scan not found"):
+        test_database.save_scan_result(
+            scan_id="nonexistent-scan",
+            cve_id="CVE-2026-12345",
+            verified_facts={"risk_score": 80},
+            llm_explanation="Test explanation."
         )
