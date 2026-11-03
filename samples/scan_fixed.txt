@@ -1,0 +1,2 @@
+# Comparison scan: fixed version for GHSA-226f-f24g-524w
+open-webui==0.9.6

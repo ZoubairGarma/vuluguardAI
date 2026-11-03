@@ -88,32 +88,6 @@ CREATE TABLE IF NOT EXISTS scan_status_history (
 );
 
 
-CREATE TABLE IF NOT EXISTS scan_results (
-
-    result_id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-    scan_id TEXT NOT NULL,
-
-    cve_id TEXT NOT NULL,
-
-    verified_facts_json TEXT NOT NULL,
-
-    llm_explanation TEXT,
-
-    created_at TEXT NOT NULL,
-
-    FOREIGN KEY (scan_id)
-        REFERENCES scans(scan_id)
-        ON DELETE CASCADE,
-
-    UNIQUE(scan_id, cve_id)
-);
-
-
-CREATE INDEX IF NOT EXISTS idx_scan_results_scan_id
-ON scan_results(scan_id);
-
-
 CREATE INDEX IF NOT EXISTS idx_scans_status
 ON scans(status);
 
@@ -654,6 +628,47 @@ def get_scan_status_history(scan_id: str) -> list[dict]:
     """
 
     return get_scan_history(scan_id)
+
+
+def save_scan_analysis_result(scan_id: str, result: dict) -> bool:
+    """Persist the complete analysis result for a scan (idempotent upsert)."""
+    if not scan_id or not str(scan_id).strip():
+        raise ValueError("Missing scan_id.")
+    if not isinstance(result, dict):
+        raise ValueError("Analysis result must be a dictionary.")
+
+    result_scan_id = result.get("scan_id")
+    if result_scan_id != str(scan_id).strip():
+        raise ValueError("Analysis result scan_id does not match the target scan.")
+
+    serialized_result = json.dumps(
+        result,
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    analyzed_at = get_current_timestamp()
+    connection = get_connection()
+
+    try:
+        connection.execute(
+            """
+            INSERT INTO scan_analysis_results (
+                scan_id, result_json, analyzed_at
+            )
+            VALUES (?, ?, ?)
+            ON CONFLICT(scan_id) DO UPDATE SET
+                result_json = excluded.result_json,
+                analyzed_at = excluded.analyzed_at
+            """,
+            (str(scan_id).strip(), serialized_result, analyzed_at),
+        )
+        connection.commit()
+        return True
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def mark_scan_failed(scan_id: str, details: str = None) -> bool:

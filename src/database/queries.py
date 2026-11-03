@@ -276,6 +276,25 @@ def get_scan_details(scan_id: str):
             dict(row) for row in history_rows
         ]
 
+        analysis_row = connection.execute(
+            """
+            SELECT result_json, analyzed_at
+            FROM scan_analysis_results
+            WHERE scan_id = ?
+            """,
+            (scan_id,)
+        ).fetchone()
+
+        analysis_result = None
+        if analysis_row is not None:
+            try:
+                analysis_result = json.loads(analysis_row["result_json"])
+            except (json.JSONDecodeError, TypeError):
+                analysis_result = {
+                    "error": "Unable to decode the stored analysis result."
+                }
+            analysis_result["analyzed_at"] = analysis_row["analyzed_at"]
+
         # 4. Decode original Kafka event
         try:
             event = json.loads(scan["event_json"])
@@ -290,7 +309,8 @@ def get_scan_details(scan_id: str):
             "scan": scan,
             "dependencies": dependencies,
             "status_history": status_history,
-            "event": event
+            "event": event,
+            "analysis_result": analysis_result,
         }
 
     finally:

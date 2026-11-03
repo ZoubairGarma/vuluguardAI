@@ -1,0 +1,2 @@
+# Test scan: version listed as affected by OSV
+open-webui==0.1.124

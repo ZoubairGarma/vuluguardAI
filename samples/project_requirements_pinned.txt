@@ -1,0 +1,14 @@
+# VulnGuard AI project dependencies pinned for a dependency scan.
+# Versions were selected from the project's installed environment or existing constraints.
+# This file is a scan input example; it does not replace requirements.txt.
+
+streamlit==1.66.1
+confluent-kafka==2.16.1
+python-dotenv==1.2.4
+pytest==9.2.0
+packaging==26.2
+requests==2.34.2
+pandas==3.0.5
+scikit-learn==1.9.1
+joblib==1.6.0
+cvss==3.6
