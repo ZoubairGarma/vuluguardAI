@@ -85,3 +85,25 @@ def test_nonexistent_scan_details(test_database):
     details = get_scan_details("unknown-scan")
 
     assert details is None
+
+
+def test_scan_details_include_persisted_analysis(
+    test_database,
+    sample_event,
+):
+    test_database.save_scan_event(sample_event)
+    result = {
+        "scan_id": sample_event["scan_id"],
+        "vulnerabilities": [{"cve_id": "CVE-2025-1234"}],
+        "unresolved": [],
+    }
+    test_database.save_scan_analysis_result(
+        sample_event["scan_id"],
+        result,
+    )
+
+    details = get_scan_details(sample_event["scan_id"])
+
+    assert details["analysis_result"]["scan_id"] == sample_event["scan_id"]
+    assert details["analysis_result"]["vulnerabilities"] == result["vulnerabilities"]
+    assert details["analysis_result"]["analyzed_at"]

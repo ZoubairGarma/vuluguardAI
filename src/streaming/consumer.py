@@ -1,5 +1,4 @@
 
-from email.mime import message
 import json
 import os
 
@@ -13,10 +12,14 @@ from confluent_kafka import (
 
 from src.database.db import (
     initialize_database,
+    mark_scan_failed,
+    save_scan_analysis_result,
     save_scan_event,
     update_scan_status,
     get_scan_status
 )
+from src.services.analysis_service import AnalysisService
+from src.services.enrichment_adapter import EnrichmentAdapter
 from src.streaming.producer import publish_scan_error
 
 
@@ -55,7 +58,6 @@ def process_scan_event(event: dict):
     print("\nDependencies:")
 
     for dependency in dependencies:
-
         print(
             f"- {dependency['name']} "
             f"== {dependency['version']} "
@@ -63,6 +65,54 @@ def process_scan_event(event: dict):
         )
 
     print("=" * 55)
+
+
+def analyze_scan_event(event: dict, analysis_service: AnalysisService) -> dict:
+    """Persist and analyze one scan, advancing its lifecycle on success."""
+    scan_id = event["scan_id"]
+    current_status = get_scan_status(scan_id)
+
+    if current_status is None:
+        inserted = save_scan_event(event)
+        if not inserted:
+            current_status = get_scan_status(scan_id)
+        else:
+            current_status = "RECEIVED"
+
+    if current_status == "RECEIVED":
+        update_scan_status(
+            scan_id,
+            "WAITING_ANALYSIS",
+            "Scan stored successfully. Vulnerability analysis started.",
+        )
+        current_status = "WAITING_ANALYSIS"
+
+    if current_status != "WAITING_ANALYSIS":
+        # A redelivered Kafka message must not rerun an already completed scan.
+        return {"scan_id": scan_id, "status": current_status, "skipped": True}
+
+    process_scan_event(event)
+
+    try:
+        result = analysis_service.analyze(
+            scan_id=scan_id,
+            dependencies=event.get("dependencies", []),
+        )
+        result_data = result.to_dict()
+        save_scan_analysis_result(scan_id, result_data)
+        update_scan_status(
+            scan_id,
+            "ANALYZED",
+            f"Analysis completed: {len(result_data['vulnerabilities'])} "
+            "vulnerability findings.",
+        )
+        return result_data
+    except Exception as error:
+        mark_scan_failed(
+            scan_id,
+            f"Vulnerability analysis failed: {type(error).__name__}: {error}",
+        )
+        raise
 
 
 def report_scan_error(message, error_type: str, details: str, raw_payload=None):
@@ -89,6 +139,9 @@ def start_consumer():
 
     # Initialize the database before consuming messages.
     initialize_database()
+    analysis_service = AnalysisService(
+        enrichment_adapter=EnrichmentAdapter.from_intelligence_engine()
+    )
 
     consumer = Consumer({
         "bootstrap.servers": KAFKA_BROKER,
@@ -124,8 +177,6 @@ def start_consumer():
                 raw_payload = message.value().decode("utf-8")
                 event = json.loads(raw_payload)
 
-                # Save the scan and its dependencies
-                # 1. Save the scan and its dependencies.
                 inserted = save_scan_event(event)
 
                 if inserted:
@@ -133,25 +184,11 @@ def start_consumer():
                 else:
                     print("\nDuplicate scan detected.")
 
-                # 2. Retrieve the current status.
-                current_status = get_scan_status(event["scan_id"])
-
-                if current_status is None:
-                    raise ValueError("Scan was not found in SQLite.")
-
-                # 3. Move a newly received scan to WAITING_ANALYSIS.
-                # This transition means it is ready for the analysis module.
-                if current_status == "RECEIVED":
-                    update_scan_status(
-                        scan_id=event["scan_id"],
-                        new_status="WAITING_ANALYSIS",
-                        details=(
-                            "Scan stored successfully. "
-                            "Waiting for vulnerability analysis."
-                        )
-                    )
-
-                process_scan_event(event)
+                result = analyze_scan_event(event, analysis_service)
+                print(
+                    "Analysis completed and saved: "
+                    f"{len(result.get('vulnerabilities', []))} finding(s)."
+                )
 
                 # Commit only after successful database persistence.
                 consumer.commit(
@@ -189,6 +226,25 @@ def start_consumer():
                     message=message,
                     asynchronous=False
                 )
+
+            except Exception as error:
+                print(f"Scan processing failed: {error}")
+                report_scan_error(
+                    message=message,
+                    error_type="SCAN_ANALYSIS_FAILED",
+                    details=str(error),
+                    raw_payload=locals().get("event"),
+                )
+
+                scan_id = locals().get("event", {}).get("scan_id")
+                if scan_id and get_scan_status(scan_id) == "FAILED":
+                    consumer.commit(
+                        message=message,
+                        asynchronous=False
+                    )
+                else:
+                    # Do not acknowledge if failure persistence also failed.
+                    raise
 
     except KeyboardInterrupt:
 

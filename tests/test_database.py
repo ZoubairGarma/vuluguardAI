@@ -145,3 +145,16 @@ def test_nonexistent_scan_status_update(test_database):
             "nonexistent-scan",
             "WAITING_ANALYSIS"
         )
+
+
+def test_save_scan_analysis_result_requires_matching_scan_id(
+    test_database,
+    sample_event,
+):
+    test_database.save_scan_event(sample_event)
+
+    with pytest.raises(ValueError, match="does not match"):
+        test_database.save_scan_analysis_result(
+            sample_event["scan_id"],
+            {"scan_id": "another-scan", "vulnerabilities": []},
+        )
