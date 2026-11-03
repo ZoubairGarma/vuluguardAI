@@ -74,6 +74,17 @@ def main():
             print(result["explanation"])
             print("-" * 70)
 
+            # Step 3: Display factual validation warnings
+            print("\n[FACTUAL VALIDATION]")
+            warnings = result.get("validation_warnings", [])
+
+            if warnings:
+                print(f"Detected {len(warnings)} warning(s):")
+                for warning in warnings:
+                    print(f"- {warning}")
+            else:
+                print("No contradictions detected by the current validator.")
+
             successful += 1
             print("\nTest completed successfully.")
 

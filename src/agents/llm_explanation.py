@@ -1,6 +1,7 @@
 
 import copy
 import json
+import re
 
 from src.agents.llm.ollama_provider import OllamaProvider
 
@@ -134,10 +135,26 @@ STRICT DATA INTEGRITY RULES:
    - UNKNOWN: the available data cannot establish the status.
    - NOT_CHECKED: no installed-version check was performed.
 
-7. A missing KEV entry does not prove that a vulnerability has never
-   been exploited.
-   An is_kev value of true means the vulnerability appears in the
-   Known Exploited Vulnerabilities catalog.
+
+7. Interpret the is_kev field as an authoritative boolean value.
+   You MUST follow these exact rules:
+
+   - If is_kev is true:
+     State: "The CVE is listed in the supplied KEV catalog snapshot."
+
+   - If is_kev is false:
+     State: "The CVE is not listed in the supplied KEV catalog snapshot."
+
+   - If is_kev is null or missing:
+     State: "KEV status is unavailable in the supplied data."
+
+   IMPORTANT:
+   - Never describe false as unavailable, unknown, or missing.
+   - Never describe false as listed, included, present, or affected in KEV.
+   - Never describe true as absent or not listed.
+   - Do not contradict the KEV status elsewhere in the explanation.
+   - Do not infer exploitation status from a missing KEV entry.
+   - Use only the supplied is_kev value. Do not guess.
 
 8. A risk level of UNKNOWN or a scoring basis of NO_DATA does not mean
    that the CVE is rejected, invalid, or harmless.
@@ -196,6 +213,113 @@ Be precise, cautious, and technically accurate.
 Return a readable explanation, not JSON.
 """
 
+ 
+    @staticmethod
+    def _validate_generated_explanation(explanation: str, verified_facts: dict) -> list:
+        """
+        Detects a small set of contradictions between the LLM explanation
+        and verified source facts. It does not rewrite the explanation.
+        """
+        warnings = []
+
+        if not isinstance(explanation, str) or not isinstance(verified_facts, dict):
+            return warnings
+
+        risk = verified_facts.get("risk", {})
+        if not isinstance(risk, dict):
+            return warnings
+
+        text = explanation.lower()
+
+        # Split the explanation into individual sentences.
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+
+        kev_positive = False
+        kev_negative = False
+        kev_unavailable = False
+
+        unavailable_pattern = re.compile(
+            r"\b(?:unavailable|not available|missing|unknown|not provided)\b"
+        )
+        kev_status_unavailable_pattern = re.compile(
+            r"\b(?:kev|known exploited vulnerabilities)\b"
+            r".{0,30}\bstatus\b.{0,20}"
+            r"\b(?:unavailable|not available|missing|unknown|not provided|null)\b"
+            r"|"
+            r"\bstatus\b.{0,20}"
+            r"\b(?:kev|known exploited vulnerabilities)\b"
+            r".{0,30}"
+            r"\b(?:unavailable|not available|missing|unknown|not provided|null)\b"
+        )        
+
+        negative_pattern = re.compile(
+            r"\b(?:not\s+(?:listed|included|present|in)|"
+            r"does\s+not\s+(?:appear|exist|feature)|"
+            r"never\s+(?:listed|included|exploited)|"
+            r"absent|excluded|not\s+present)\b"
+        )
+
+        positive_pattern = re.compile(
+            r"\b(?:listed|included|present|appears)\b"
+        )
+
+        for sentence in sentences:
+            mentions_kev = (
+                "kev" in sentence
+                or "known exploited vulnerabilities" in sentence
+            )
+
+            if not mentions_kev:
+                continue
+
+            if kev_status_unavailable_pattern.search(sentence):
+                kev_unavailable = True
+
+            negative_match = negative_pattern.search(sentence)
+            positive_match = positive_pattern.search(sentence)
+
+            if negative_match:
+                kev_negative = True
+
+            # Do not interpret "not listed" as a positive KEV claim.
+            elif positive_match:
+                kev_positive = True
+
+        is_kev = risk.get("is_kev")
+
+        if is_kev is True and (kev_negative or kev_unavailable):
+            warnings.append(
+                "KEV contradiction: the source indicates that the CVE is in KEV, "
+                "but the explanation denies this or says the status is unavailable."
+            )
+
+        elif is_kev is False and (kev_positive or kev_unavailable):
+            warnings.append(
+                "KEV contradiction: the source indicates that the CVE is not "
+                "in KEV, but the explanation claims it is listed or says the status is unavailable."
+            )
+
+        # Check EPSS percentile contradictions sentence by sentence.
+        percentile = risk.get("epss_percentile")
+
+        if percentile is not None:
+            for sentence in sentences:
+                mentions_percentile = (
+                    "percentile" in sentence
+                )
+
+                says_unavailable = unavailable_pattern.search(sentence)
+
+                if mentions_percentile and says_unavailable:
+                    warnings.append(
+                        "EPSS percentile contradiction: a percentile value exists "
+                        "in the source data, but the explanation says it is unavailable."
+                    )
+                    break
+
+        return warnings
+
+
     def explain(self, analysis: dict) -> dict:
         """
         Generate an explanation while preserving the original
@@ -241,7 +365,10 @@ Return a readable explanation, not JSON.
             raise ValueError(
                 "The LLM provider returned an empty explanation"
             )
-
+        validation_warnings = self._validate_generated_explanation(
+            explanation,
+            verified_facts,
+        )
         return {
             "cve_id": analysis["cve_id"],
             "explanation": explanation.strip(),
@@ -253,6 +380,7 @@ Return a readable explanation, not JSON.
                 analysis.get("recommendations", [])
             ),
             "verified_facts": verified_facts,
+            "validation_warnings": validation_warnings,
             "metadata": {
                 "provider": self.provider.__class__.__name__,
                 "llm_generated": True,
