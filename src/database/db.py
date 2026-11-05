@@ -88,6 +88,20 @@ CREATE TABLE IF NOT EXISTS scan_status_history (
 );
 
 
+CREATE TABLE IF NOT EXISTS scan_analysis_results (
+
+    scan_id TEXT PRIMARY KEY,
+
+    result_json TEXT NOT NULL,
+
+    analyzed_at TEXT NOT NULL,
+
+    FOREIGN KEY (scan_id)
+        REFERENCES scans(scan_id)
+        ON DELETE CASCADE
+);
+
+
 CREATE INDEX IF NOT EXISTS idx_scans_status
 ON scans(status);
 

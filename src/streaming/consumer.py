@@ -139,8 +139,11 @@ def start_consumer():
 
     # Initialize the database before consuming messages.
     initialize_database()
+    from src.services.risk_scoring_adapter import RiskScoringAdapter
+
     analysis_service = AnalysisService(
-        enrichment_adapter=EnrichmentAdapter.from_intelligence_engine()
+        enrichment_adapter=EnrichmentAdapter.from_intelligence_engine(),
+        risk_scorer=RiskScoringAdapter(),
     )
 
     consumer = Consumer({
