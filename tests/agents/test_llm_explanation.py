@@ -25,6 +25,7 @@ def sample_analysis():
             {
                 "osv_id": "GHSA-example",
                 "summary": "Example vulnerability description.",
+                "details": "The issue allows stored cross-site scripting.",
                 "published": "2025-01-01",
                 "modified": "2025-01-02",
             }
@@ -83,6 +84,22 @@ def test_explain_builds_prompt_with_analysis_data(sample_analysis):
     assert "example-package" in prompt
     assert "1.0.2" in prompt
     assert "KEV_OVERRIDE" in prompt
+    assert "The issue allows stored cross-site scripting." in prompt
+
+
+def test_prompt_forbids_unsupported_impact_and_explains_zero_boundary(
+    sample_analysis,
+):
+    prompt = " ".join(
+        LLMExplanationAgent(provider=Mock())
+        ._build_prompt(sample_analysis)
+        .split()
+    )
+
+    assert "A vulnerability title or class alone is not enough" in prompt
+    assert "If impact is not explicitly established" in prompt
+    assert "literal released package version" in prompt
+    assert "Keep Potential Impact and Analysis Limitations consistent" in prompt
 
 
 def test_explain_rejects_non_dictionary():

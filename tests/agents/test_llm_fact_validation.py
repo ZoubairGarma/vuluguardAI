@@ -127,3 +127,67 @@ def test_detects_unavailable_kev_status_when_true():
     )
 
     assert any("KEV" in warning for warning in warnings)    
+
+
+def test_flags_missing_or_mismatched_source_metrics():
+    facts = {
+        "cve_id": "CVE-2025-12345",
+        "risk": {
+            "score": 85.0,
+            "level": "CRITICAL",
+            "cvss_score": 9.8,
+            "epss_score": 0.95,
+            "epss_percentile": 0.99,
+            "is_kev": True,
+        },
+        "affected_packages": [
+            {
+                "package_name": "example-package",
+                "installed_version": "1.0.0",
+                "version_status": "AFFECTED",
+                "fixed_versions": ["1.0.2"],
+            }
+        ],
+    }
+
+    warnings = LLMExplanationAgent._validate_generated_explanation(
+        "CVE-2025-12345 is CRITICAL with a CVSS score of 7.2. "
+        "The example-package version 1.0.0 is not affected.",
+        facts,
+    )
+
+    assert any("cvss_score" in warning for warning in warnings)
+    assert any("Package status contradiction" in warning for warning in warnings)
+    assert any("Fixed version missing" in warning for warning in warnings)
+
+
+def test_accepts_complete_matching_facts():
+    facts = {
+        "cve_id": "CVE-2025-12345",
+        "risk": {
+            "score": 85.0,
+            "level": "CRITICAL",
+            "cvss_score": 9.8,
+            "epss_score": 0.95,
+            "epss_percentile": 0.99,
+            "is_kev": True,
+        },
+        "affected_packages": [
+            {
+                "package_name": "example-package",
+                "installed_version": "1.0.0",
+                "version_status": "AFFECTED",
+                "fixed_versions": ["1.0.2"],
+            }
+        ],
+    }
+
+    explanation = (
+        "CVE-2025-12345 is CRITICAL with VulnGuard score 85, CVSS 9.8, "
+        "EPSS 0.95 and percentile 0.99. It is listed in KEV. "
+        "example-package version 1.0.0 is AFFECTED; OSV lists 1.0.2 as fixed."
+    )
+
+    assert LLMExplanationAgent._validate_generated_explanation(
+        explanation, facts
+    ) == []

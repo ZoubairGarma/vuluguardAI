@@ -15,7 +15,7 @@ def test_plan():
         "cve_id": "CVE-2023-0297",
         "total_tests": 1,
         "approval_status": "PENDING_APPROVAL",
-        "execution_status": "NOT_EXECUTED",
+        "execution_status": "NOT_STARTED",
         "safety": {
             "non_destructive": True,
             "automatic_execution": False,
@@ -25,7 +25,7 @@ def test_plan():
             {
                 "test_id": "CVE-2023-0297-TEST-001",
                 "approval_status": "PENDING_APPROVAL",
-                "execution_status": "NOT_EXECUTED",
+                "execution_status": "NOT_STARTED",
             }
         ],
     }
@@ -38,7 +38,7 @@ def test_approve_pending_plan(manager, test_plan):
     assert result["approval"]["decision"] == "APPROVED"
     assert result["approval"]["reviewer"] == "security_reviewer"
     assert result["tests"][0]["approval_status"] == "APPROVED"
-    assert result["execution_status"] == "NOT_EXECUTED"
+    assert result["execution_status"] == "NOT_STARTED"
 
 
 def test_reject_pending_plan(manager, test_plan):
@@ -52,7 +52,7 @@ def test_reject_pending_plan(manager, test_plan):
     assert result["approval"]["decision"] == "REJECTED"
     assert result["approval"]["reason"] == "Test scenario needs revision"
     assert result["tests"][0]["approval_status"] == "REJECTED"
-    assert result["execution_status"] == "NOT_EXECUTED"
+    assert result["execution_status"] == "NOT_STARTED"
 
 
 def test_cannot_approve_already_approved_plan(manager, test_plan):

@@ -102,6 +102,44 @@ CREATE TABLE IF NOT EXISTS scan_analysis_results (
 );
 
 
+CREATE TABLE IF NOT EXISTS scan_test_plans (
+
+    scan_id TEXT NOT NULL,
+
+    cve_id TEXT NOT NULL,
+
+    plan_json TEXT NOT NULL,
+
+    updated_at TEXT NOT NULL,
+
+    PRIMARY KEY (scan_id, cve_id),
+
+    FOREIGN KEY (scan_id)
+        REFERENCES scans(scan_id)
+        ON DELETE CASCADE
+);
+
+
+CREATE TABLE IF NOT EXISTS scan_results (
+
+    scan_id TEXT NOT NULL,
+
+    cve_id TEXT NOT NULL,
+
+    verified_facts_json TEXT NOT NULL,
+
+    llm_explanation TEXT,
+
+    created_at TEXT NOT NULL,
+
+    PRIMARY KEY (scan_id, cve_id),
+
+    FOREIGN KEY (scan_id)
+        REFERENCES scans(scan_id)
+        ON DELETE CASCADE
+);
+
+
 CREATE INDEX IF NOT EXISTS idx_scans_status
 ON scans(status);
 
@@ -439,7 +477,77 @@ def save_scan_result(
         raise
 
     finally:
-        connection.close()        
+        connection.close()
+
+
+def save_scan_test_plan(scan_id: str, cve_id: str, test_plan: dict) -> bool:
+    """Persist a generated or updated test plan for one scan finding."""
+
+    if not isinstance(scan_id, str) or not scan_id.strip():
+        raise ValueError("Missing scan_id.")
+    if not isinstance(cve_id, str) or not cve_id.strip():
+        raise ValueError("Missing CVE ID.")
+    if not isinstance(test_plan, dict):
+        raise ValueError("test_plan must be a dictionary.")
+    if test_plan.get("cve_id") != cve_id:
+        raise ValueError("Test plan CVE ID does not match the requested CVE ID.")
+
+    serialized_plan = json.dumps(test_plan, ensure_ascii=False)
+    now = get_current_timestamp()
+    connection = get_connection()
+
+    try:
+        scan = connection.execute(
+            "SELECT scan_id FROM scans WHERE scan_id = ?",
+            (scan_id.strip(),),
+        ).fetchone()
+        if scan is None:
+            raise ValueError(f"Scan not found: {scan_id}")
+
+        connection.execute(
+            """
+            INSERT INTO scan_test_plans (scan_id, cve_id, plan_json, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(scan_id, cve_id)
+            DO UPDATE SET
+                plan_json = excluded.plan_json,
+                updated_at = excluded.updated_at
+            """,
+            (scan_id.strip(), cve_id.strip(), serialized_plan, now),
+        )
+        connection.commit()
+        return True
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def get_scan_test_plan(scan_id: str, cve_id: str) -> dict | None:
+    """Retrieve a persisted test plan, if one exists."""
+
+    connection = get_connection()
+    try:
+        row = connection.execute(
+            """
+            SELECT plan_json
+            FROM scan_test_plans
+            WHERE scan_id = ? AND cve_id = ?
+            """,
+            (scan_id, cve_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            plan = json.loads(row["plan_json"])
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError("Stored test plan is not valid JSON.") from exc
+        if not isinstance(plan, dict):
+            raise ValueError("Stored test plan must be a JSON object.")
+        return plan
+    finally:
+        connection.close()
 
 ALLOWED_TRANSITIONS = {
     "RECEIVED": {"WAITING_ANALYSIS", "FAILED"},

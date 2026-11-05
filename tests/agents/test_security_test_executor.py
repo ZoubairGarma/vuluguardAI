@@ -14,7 +14,7 @@ def approved_plan():
     return {
         "cve_id": "CVE-2023-0297",
         "approval_status": "APPROVED",
-        "execution_status": "NOT_EXECUTED",
+        "execution_status": "NOT_STARTED",
         "safety": {
             "non_destructive": True,
             "automatic_execution": False,
@@ -28,6 +28,7 @@ def approved_plan():
                 "target": {
                     "package_name": "pip",
                     "ecosystem": "PyPI",
+                    "installed_version": "1.0.0",
                 },
                 "evidence": {
                     "affected_ranges": [],
@@ -35,7 +36,7 @@ def approved_plan():
                 },
                 "safety": "NON_DESTRUCTIVE",
                 "approval_status": "APPROVED",
-                "execution_status": "NOT_EXECUTED",
+                "execution_status": "NOT_STARTED",
             }
         ],
     }
@@ -90,7 +91,7 @@ def test_execution_does_not_modify_original_plan(executor, approved_plan):
 
     assert approved_plan["execution_status"] == original_status
     assert "execution_results" not in approved_plan
-    assert approved_plan["tests"][0]["execution_status"] == "NOT_EXECUTED"
+    assert approved_plan["tests"][0]["execution_status"] == "NOT_STARTED"
 
 
 def test_successful_execution_returns_results(executor, approved_plan):
@@ -103,15 +104,7 @@ def test_successful_execution_returns_results(executor, approved_plan):
 
 
 
-def test_detects_affected_installed_version(executor, approved_plan, monkeypatch):
-    from src.agents import security_test_executor
-
-    monkeypatch.setattr(
-        security_test_executor.metadata,
-        "version",
-        lambda package: "1.0.0",
-    )
-
+def test_detects_affected_scan_declared_version(executor, approved_plan):
     approved_plan["tests"][0]["evidence"]["affected_ranges"] = [
         {
             "type": "ECOSYSTEM",
@@ -127,15 +120,8 @@ def test_detects_affected_installed_version(executor, approved_plan, monkeypatch
     assert result["execution_results"][0]["version_status"] == "AFFECTED"
 
 
-def test_detects_fixed_installed_version(executor, approved_plan, monkeypatch):
-    from src.agents import security_test_executor
-
-    monkeypatch.setattr(
-        security_test_executor.metadata,
-        "version",
-        lambda package: "2.0.0",
-    )
-
+def test_detects_fixed_scan_declared_version(executor, approved_plan):
+    approved_plan["tests"][0]["target"]["installed_version"] = "2.0.0"
     approved_plan["tests"][0]["evidence"]["affected_ranges"] = [
         {
             "type": "ECOSYSTEM",
@@ -152,16 +138,9 @@ def test_detects_fixed_installed_version(executor, approved_plan, monkeypatch):
 
 
 def test_returns_unknown_for_unrecognized_ranges(
-    executor, approved_plan, monkeypatch
+    executor, approved_plan
 ):
-    from src.agents import security_test_executor
-
-    monkeypatch.setattr(
-        security_test_executor.metadata,
-        "version",
-        lambda package: "1.5.0",
-    )
-
+    approved_plan["tests"][0]["target"]["installed_version"] = "1.5.0"
     approved_plan["tests"][0]["evidence"]["affected_ranges"] = [
         {
             "type": "GIT",
@@ -176,20 +155,39 @@ def test_returns_unknown_for_unrecognized_ranges(
     assert result["execution_results"][0]["version_status"] == "UNKNOWN"
 
 
-def test_detects_package_not_installed(executor, approved_plan, monkeypatch):
-    from src.agents import security_test_executor
-    from importlib import metadata
+def test_missing_scan_version_is_skipped(executor, approved_plan):
+    approved_plan["tests"][0]["target"]["installed_version"] = None
+    result = executor.execute(approved_plan)
 
-    def package_not_found(package):
-        raise metadata.PackageNotFoundError(package)
+    assert result["execution_results"][0]["version_status"] == "UNKNOWN"
+    assert result["execution_results"][0]["execution_status"] == "SKIPPED"
 
-    monkeypatch.setattr(
-        security_test_executor.metadata,
-        "version",
-        package_not_found,
-    )
+
+def test_uses_version_from_scan_not_local_environment(executor, approved_plan):
+    approved_plan["tests"][0]["target"]["installed_version"] = "1.0.0"
+    approved_plan["tests"][0]["evidence"]["affected_ranges"] = [
+        {
+            "type": "ECOSYSTEM",
+            "events": [{"introduced": "0"}, {"fixed": "2.0.0"}],
+        }
+    ]
 
     result = executor.execute(approved_plan)
 
-    assert result["execution_results"][0]["version_status"] == "NOT_INSTALLED"
-    assert result["execution_results"][0]["execution_status"] == "COMPLETED"
+    assert result["execution_results"][0]["installed_version"] == "1.0.0"
+    assert result["execution_results"][0]["version_source"] == "SCAN_DECLARED_DEPENDENCY"
+    assert result["execution_results"][0]["version_status"] == "AFFECTED"
+
+
+def test_reports_running_and_final_states(executor, approved_plan):
+    observed_states = []
+
+    result = executor.execute(
+        approved_plan,
+        on_status_change=lambda plan: observed_states.append(
+            plan["execution_status"]
+        ),
+    )
+
+    assert observed_states == ["RUNNING", "COMPLETED"]
+    assert result["execution_status"] == "COMPLETED"

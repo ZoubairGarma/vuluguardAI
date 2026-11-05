@@ -256,6 +256,44 @@ def test_save_scan_result_updates_existing_cve(
         connection.close()
 
 
+def test_scan_test_plan_persists_state_updates(test_database, sample_event):
+    test_database.save_scan_event(sample_event)
+    plan = {
+        "cve_id": "CVE-2026-12345",
+        "approval_status": "PENDING_APPROVAL",
+        "execution_status": "NOT_STARTED",
+        "tests": [],
+    }
+
+    assert test_database.save_scan_test_plan(
+        sample_event["scan_id"], "CVE-2026-12345", plan
+    ) is True
+    assert test_database.get_scan_test_plan(
+        sample_event["scan_id"], "CVE-2026-12345"
+    ) == plan
+
+    plan["approval_status"] = "APPROVED"
+    plan["execution_status"] = "RUNNING"
+    test_database.save_scan_test_plan(
+        sample_event["scan_id"], "CVE-2026-12345", plan
+    )
+
+    restored_plan = test_database.get_scan_test_plan(
+        sample_event["scan_id"], "CVE-2026-12345"
+    )
+    assert restored_plan["approval_status"] == "APPROVED"
+    assert restored_plan["execution_status"] == "RUNNING"
+
+
+def test_save_scan_test_plan_requires_existing_scan(test_database):
+    with pytest.raises(ValueError, match="Scan not found"):
+        test_database.save_scan_test_plan(
+            "missing-scan",
+            "CVE-2026-12345",
+            {"cve_id": "CVE-2026-12345"},
+        )
+
+
 def test_save_scan_result_rejects_nonexistent_scan(test_database):
     """
     Results cannot be saved for a scan that does not exist.

@@ -101,12 +101,12 @@ def test_generated_tests_require_human_approval(generator):
     result = generator.generate(analysis)
 
     assert result["approval_status"] == "PENDING_APPROVAL"
-    assert result["execution_status"] == "NOT_EXECUTED"
+    assert result["execution_status"] == "NOT_STARTED"
     assert result["safety"]["non_destructive"] is True
     assert result["safety"]["automatic_execution"] is False
     assert result["safety"]["requires_human_approval"] is True
 
     for test in result["tests"]:
         assert test["approval_status"] == "PENDING_APPROVAL"
-        assert test["execution_status"] == "NOT_EXECUTED"
+        assert test["execution_status"] == "NOT_STARTED"
         assert test["safety"] == "NON_DESTRUCTIVE"

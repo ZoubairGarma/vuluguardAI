@@ -2,6 +2,7 @@
 import copy
 import json
 import re
+from decimal import Decimal, InvalidOperation
 
 from src.agents.llm.ollama_provider import OllamaProvider
 
@@ -84,11 +85,35 @@ class LLMExplanationAgent:
             for package in analysis["affected_packages"]
         ]
 
+        risk = analysis.get("risk") or {}
+        if not isinstance(risk, dict):
+            risk = {}
+
+        advisories = [
+            {
+                "osv_id": advisory.get("osv_id"),
+                "summary": advisory.get("summary"),
+                "details": advisory.get("details"),
+                "published": advisory.get("published"),
+                "modified": advisory.get("modified"),
+            }
+            for advisory in analysis.get("advisories", [])
+        ]
+
         prompt_data = {
             "cve_id": analysis["cve_id"],
             "description": analysis.get("description"),
-            "risk": analysis.get("risk", {}),
-            "advisories": analysis.get("advisories", []),
+            "risk": {
+                "score": risk.get("score"),
+                "level": risk.get("level"),
+                "is_kev": risk.get("is_kev"),
+                "cvss_score": risk.get("cvss_score"),
+                "cvss_severity": risk.get("cvss_severity"),
+                "epss_score": risk.get("epss_score"),
+                "epss_percentile": risk.get("epss_percentile"),
+                "scoring_basis": risk.get("scoring_basis"),
+            },
+            "advisories": advisories,
             "affected_packages": packages,
             "installed_package_check_performed": analysis.get(
                 "installed_package_check_performed",
@@ -135,19 +160,14 @@ STRICT DATA INTEGRITY RULES:
    - UNKNOWN: the available data cannot establish the status.
    - NOT_CHECKED: no installed-version check was performed.
 
-
 7. Interpret the is_kev field as an authoritative boolean value.
    You MUST follow these exact rules:
-
    - If is_kev is true:
      State: "The CVE is listed in the supplied KEV catalog snapshot."
-
    - If is_kev is false:
      State: "The CVE is not listed in the supplied KEV catalog snapshot."
-
    - If is_kev is null or missing:
      State: "KEV status is unavailable in the supplied data."
-
    IMPORTANT:
    - Never describe false as unavailable, unknown, or missing.
    - Never describe false as listed, included, present, or affected in KEV.
@@ -171,6 +191,44 @@ STRICT DATA INTEGRITY RULES:
     clearly state that limitation instead of resolving it yourself.
 
 12. Do not omit any affected package from the explanation.
+
+STRICT VERSION RULES:
+- Never invent, normalize, reformat, or infer version numbers.
+- Preserve version strings exactly as supplied.
+- An introduced version of "0" must remain "0".
+- Do not transform "0" into "0.0.0-0" or another format.
+- Explain "introduced: 0" only as the supplied OSV range boundary; do not
+  describe it as a literal released package version or release date.
+- Distinguish affected ranges from installed versions.
+- A fixed version is not an installed version.
+- If installed_version is null, say no installed version was provided.
+- NOT_CHECKED means the installed version was not checked.
+- Never claim the project is vulnerable without an AFFECTED
+  installed version status.
+
+STRICT SECURITY RULES:
+- Report the exact CVE identifier.
+- Report supplied OSV identifiers.
+- Report the exact package name and ecosystem.
+- Report the exact CVSS score and severity.
+- Report the exact EPSS score and percentile.
+- Explain KEV status using is_kev:
+  true means listed in the supplied CISA KEV snapshot.
+  false means not listed in that snapshot.
+- Report the exact VulnGuard risk score and risk level.
+- The VulnGuard score is a prioritization score, not a probability.
+- EPSS is an estimated exploitation probability, not severity.
+- Describe impact only when the supplied description or advisory explicitly
+  supports it. A vulnerability title or class alone is not enough to infer
+  data theft, code execution, privilege escalation, or other consequences.
+- Do not add generic claims about what an attacker "may" do. If impact is
+  not explicitly established by the supplied text, say it is unavailable.
+- Keep Potential Impact and Analysis Limitations consistent: do not claim a
+  specific impact in one section and say it is unavailable in another.
+- If the supplied description/advisory contains only a title or a short
+  summary, keep Potential Impact limited to what that text explicitly states.
+
+Do not explain the JSON structure. Explain the vulnerability itself.
 
 SOURCE DATA:
 
@@ -210,10 +268,10 @@ In particular, distinguish unavailable risk data from evidence
 that a vulnerability is rejected or harmless.
 
 Be precise, cautious, and technically accurate.
+Write the entire explanation in English only; do not mix languages.
 Return a readable explanation, not JSON.
 """
 
- 
     @staticmethod
     def _validate_generated_explanation(explanation: str, verified_facts: dict) -> list:
         """
@@ -227,7 +285,7 @@ Return a readable explanation, not JSON.
 
         risk = verified_facts.get("risk", {})
         if not isinstance(risk, dict):
-            return warnings
+            risk = {}
 
         text = explanation.lower()
 
@@ -317,7 +375,105 @@ Return a readable explanation, not JSON.
                     )
                     break
 
-        return warnings
+        # Require key source facts to be represented exactly enough to
+        # detect omissions or conflicting values in the generated report.
+        cve_id = verified_facts.get("cve_id")
+        if cve_id and str(cve_id).lower() not in text:
+            warnings.append(
+                f"CVE identifier missing: the explanation does not include {cve_id}."
+            )
+
+        numeric_fields = (
+            "score",
+            "cvss_score",
+            "epss_score",
+            "epss_percentile",
+        )
+        numeric_tokens = set()
+        for token in re.findall(r"(?<![\w.])-?\d+(?:\.\d+)?", text):
+            try:
+                numeric_tokens.add(Decimal(token).normalize())
+            except InvalidOperation:
+                continue
+
+        for field in numeric_fields:
+            expected = risk.get(field)
+            if expected is None:
+                continue
+            try:
+                expected_number = Decimal(str(expected)).normalize()
+            except InvalidOperation:
+                continue
+            if expected_number not in numeric_tokens:
+                warnings.append(
+                    f"Risk metric missing or mismatched: the supplied {field} "
+                    "value is not stated accurately in the explanation."
+                )
+
+        level = risk.get("level")
+        if level and str(level).lower() not in text:
+            warnings.append(
+                "Risk level missing or mismatched: the explanation does not "
+                "state the supplied risk level."
+            )
+
+        package_records = verified_facts.get("affected_packages", [])
+        if isinstance(package_records, list):
+            for package in package_records:
+                if not isinstance(package, dict):
+                    continue
+                package_name = package.get("package_name")
+                if package_name and str(package_name).lower() not in text:
+                    warnings.append(
+                        f"Affected package missing: {package_name} is not mentioned."
+                    )
+                    continue
+
+                installed_version = package.get("installed_version")
+                if installed_version and str(installed_version).lower() not in text:
+                    warnings.append(
+                        f"Installed version missing: the supplied version for "
+                        f"{package_name} ({installed_version}) is not mentioned."
+                    )
+
+                status = str(package.get("version_status") or "").upper()
+                package_sentences = [
+                    sentence for sentence in sentences
+                    if package_name and str(package_name).lower() in sentence
+                ]
+                package_context = " ".join(package_sentences)
+                if status == "AFFECTED" and re.search(
+                    r"\b(?:not affected|unaffected|not vulnerable|outside the affected)\b",
+                    package_context,
+                ):
+                    warnings.append(
+                        f"Package status contradiction: {package_name} is AFFECTED "
+                        "in the source data but described as not affected."
+                    )
+                elif status == "NOT_AFFECTED" and re.search(
+                    r"\b(?:affected|vulnerable)\b", package_context
+                ) and not re.search(
+                    r"\b(?:not affected|unaffected|not vulnerable)\b",
+                    package_context,
+                ):
+                    warnings.append(
+                        f"Package status contradiction: {package_name} is NOT_AFFECTED "
+                        "in the source data but described as affected."
+                    )
+
+                for fixed_version in package.get("fixed_versions", []) or []:
+                    version_pattern = re.compile(
+                        rf"(?<![\w.]){re.escape(str(fixed_version))}(?![\w.])",
+                        re.IGNORECASE,
+                    )
+                    if not version_pattern.search(package_context):
+                        warnings.append(
+                            f"Fixed version missing: the OSV-supplied version "
+                            f"{fixed_version} for {package_name} is not mentioned."
+                        )
+
+        # Avoid repeating the same warning when multiple checks detect it.
+        return list(dict.fromkeys(warnings))
 
 
     def explain(self, analysis: dict) -> dict:
@@ -329,6 +485,7 @@ Return a readable explanation, not JSON.
         self._validate_analysis(analysis)
 
         verified_facts = {
+            "cve_id": copy.deepcopy(analysis.get("cve_id")),
             "description": copy.deepcopy(
                 analysis.get("description")
             ),

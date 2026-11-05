@@ -94,8 +94,8 @@ class HumanApprovalManager:
         ):
             raise ValueError("Test plan does not satisfy approval safety rules")
 
-        if test_plan.get("execution_status") != "NOT_EXECUTED":
-            raise ValueError("Test plan must not have been executed")
+        if test_plan.get("execution_status") != "NOT_STARTED":
+            raise ValueError("Test plan execution must not have started")
 
         return deepcopy(test_plan)
 

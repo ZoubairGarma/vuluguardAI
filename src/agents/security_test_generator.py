@@ -72,7 +72,7 @@ class SecurityTestGenerator:
             "total_tests": len(generated_tests),
             "tests": generated_tests,
             "approval_status": "PENDING_APPROVAL",
-            "execution_status": "NOT_EXECUTED",
+            "execution_status": "NOT_STARTED",
             "safety": {
                 "non_destructive": True,
                 "automatic_execution": False,
@@ -152,5 +152,5 @@ class SecurityTestGenerator:
             ),
             "safety": "NON_DESTRUCTIVE",
             "approval_status": "PENDING_APPROVAL",
-            "execution_status": "NOT_EXECUTED",
+            "execution_status": "NOT_STARTED",
         }
