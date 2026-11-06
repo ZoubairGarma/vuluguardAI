@@ -1,5 +1,6 @@
 
 import importlib
+import json
 import streamlit as st
 from src.agents import llm_explanation as llm_explanation_module
 from src.agents.security_workflow_graph import run_security_workflow
@@ -543,6 +544,19 @@ with analysis_tab:
                             if test_plan.get("final_report"):
                                 with st.expander("Final workflow report"):
                                     st.json(test_plan["final_report"])
+                                    report_json_str = json.dumps(
+                                        test_plan["final_report"],
+                                        indent=2,
+                                        ensure_ascii=False,
+                                    )
+                                    st.download_button(
+                                        label="📥 Download final report (JSON)",
+                                        data=report_json_str,
+                                        file_name=f"vulnguard_report_{selected_scan_id[:8]}_{cve_id}.json",
+                                        mime="application/json",
+                                        key=f"download_report_{selected_scan_id}_{cve_id}",
+                                        width="stretch",
+                                    )
         else:
             st.success("No affected vulnerabilities were confirmed for this scan.")
 
