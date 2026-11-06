@@ -66,6 +66,23 @@ def parse_cve_ids(value):
     return []
 
 
+def selected_cvss_version(group):
+    """Return the version for the vector that supplied the highest score."""
+    valid = group[group["cvss_base_score"].notna()]
+    if valid.empty:
+        return None
+
+    row = valid.loc[valid["cvss_base_score"].idxmax()]
+    version = row.get("cvss_version")
+    if isinstance(version, str) and version.strip():
+        return version.strip().removeprefix("CVSS:")
+
+    vector = row.get("vector")
+    if isinstance(vector, str) and vector.startswith("CVSS:"):
+        return vector.split("/", 1)[0].removeprefix("CVSS:")
+    return None
+
+
 def main():
     print("Loading OSV severity data...")
 
@@ -147,6 +164,7 @@ def main():
         summary_rows.append({
             "cve_id": cve_id,
             "cvss_v3_score": v3_max,
+            "cvss_v3_version": selected_cvss_version(v3),
             "cvss_v3_severity": (
                 v3.loc[
                     v3["cvss_base_score"].idxmax(),
@@ -156,6 +174,7 @@ def main():
             ),
             "cvss_v3_entry_count": len(v3),
             "cvss_v4_score": v4_max,
+            "cvss_v4_version": selected_cvss_version(v4),
             "cvss_v4_severity": (
                 v4.loc[
                     v4["cvss_base_score"].idxmax(),

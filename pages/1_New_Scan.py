@@ -78,7 +78,7 @@ if uploaded_file is not None:
 
             st.dataframe(
                 dependencies,
-                use_container_width=True
+                width="stretch"
             )
 
         else:

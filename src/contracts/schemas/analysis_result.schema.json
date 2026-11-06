@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulnguard.local/contracts/analysis-result-1.0.schema.json",
+  "title": "VulnGuard analysis result",
+  "type": "object",
+  "required": ["scan_id", "vulnerabilities", "unresolved"],
+  "properties": {
+    "scan_id": {"type": "string", "minLength": 1},
+    "schema_version": {"const": "1.0"},
+    "vulnerabilities": {"type": "array", "items": {"type": "object"}},
+    "risk_assessment": {"type": ["object", "null"]},
+    "ml_prediction": {"type": ["object", "null"]},
+    "unresolved": {"type": "array", "items": {"type": "object"}},
+    "llm_explanations": {"type": "array", "items": {"type": "object"}},
+    "security_test_plans": {"type": "array", "items": {"type": "object"}},
+    "final_reports": {"type": "array", "items": {"type": "object"}}
+  },
+  "additionalProperties": true
+}

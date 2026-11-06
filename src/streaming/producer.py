@@ -8,6 +8,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from confluent_kafka import Producer
+from src.contracts import validate_scan_error, validate_scan_request
 
 
 # Load configuration from the .env file
@@ -70,14 +71,14 @@ def build_scan_event(
         "scan_id": str(uuid.uuid4()),
         "event_type": "scan_request",
         "schema_version": "1.0",
-        "project_name": project_name,
+        "project_name": project_name.strip(),
         "submitted_at": datetime.now(
             timezone.utc
         ).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "dependencies": dependencies
     }
 
-    return event
+    return validate_scan_request(event)
 
 
 def build_scan_error_event(
@@ -90,7 +91,7 @@ def build_scan_error_event(
     Build a standardized dead-letter event for invalid Kafka payloads.
     """
 
-    return {
+    event = {
         "error_id": str(uuid.uuid4()),
         "event_type": "scan_error",
         "schema_version": "1.0",
@@ -102,6 +103,9 @@ def build_scan_error_event(
             timezone.utc
         ).isoformat(timespec="seconds").replace("+00:00", "Z"),
     }
+    if isinstance(raw_payload, bytes):
+        event["raw_payload"] = raw_payload.decode("utf-8", errors="replace")
+    return validate_scan_error(event)
 
 
 def publish_scan_request(

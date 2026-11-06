@@ -19,6 +19,8 @@ class RiskScoringAdapter:
         "cvss_score_used",
         "cvss_severity_used",
         "cvss_source",
+        "cvss_provider",
+        "cvss_version_used",
         "epss_score_used",
         "epss_percentile",
         "is_kev",
@@ -47,7 +49,10 @@ class RiskScoringAdapter:
         missing = self.REQUIRED_COLUMNS - set(df.columns)
         if missing:
             raise ValueError(
-                f"Missing columns in risk assessment: {sorted(missing)}"
+                "Missing columns in risk assessment: "
+                f"{sorted(missing)}. Rebuild the derived files with "
+                "`python -m src.preprocessing.calculate_cvss_scores` then "
+                "`python -m src.agents.risk_scoring`."
             )
 
         if df["cve_id"].isna().any():
@@ -57,8 +62,17 @@ class RiskScoringAdapter:
             raise ValueError("Risk assessment contains duplicate CVE IDs.")
 
         self._risk_lookup = (
-            df.set_index("cve_id")
-            .to_dict(orient="index")
+            {
+                cve_id: {
+                    column: (
+                        None
+                        if pd.isna(value)
+                        else value.item() if hasattr(value, "item") else value
+                    )
+                    for column, value in row.items()
+                }
+                for cve_id, row in df.set_index("cve_id").iterrows()
+            }
         )
 
     def __call__(

@@ -1,6 +1,8 @@
 
 from typing import Any, Dict, List
 
+from src.contracts import validate_test_plan
+
 
 class SecurityTestGenerator:
     """
@@ -67,8 +69,9 @@ class SecurityTestGenerator:
 
             generated_tests.append(test)
 
-        return {
+        plan = {
             "cve_id": cve_id,
+            "schema_version": "1.0",
             "total_tests": len(generated_tests),
             "tests": generated_tests,
             "approval_status": "PENDING_APPROVAL",
@@ -79,6 +82,7 @@ class SecurityTestGenerator:
                 "requires_human_approval": True,
             },
         }
+        return validate_test_plan(plan)
 
     def _generate_package_test(
         self,
@@ -97,29 +101,33 @@ class SecurityTestGenerator:
         if version_status == "AFFECTED":
             title = "Confirm affected package version"
             objective = (
-                "Verify that the installed package version matches "
-                "an affected OSV version range."
+                "Download the exact pinned binary wheel, then install it in a "
+                "network-disabled constrained Docker container, inspect its "
+                "metadata, and compare that version with the affected OSV ranges."
             )
 
         elif version_status == "NOT_AFFECTED":
             title = "Verify non-affected package version"
             objective = (
-                "Verify that the installed package version remains "
-                "outside the affected OSV version ranges."
+                "Download the exact pinned binary wheel, then install it in a "
+                "network-disabled constrained Docker container, inspect its "
+                "metadata, and compare its version with the affected OSV ranges."
             )
 
         elif version_status == "NOT_CHECKED":
             title = "Check installed package version"
             objective = (
-                "Identify the installed package version and compare it "
-                "with the affected OSV version ranges."
+                "Download the exact pinned binary wheel, then install it in a "
+                "network-disabled constrained Docker container and compare its "
+                "metadata version with affected OSV ranges."
             )
 
         else:
             title = "Review package version manually"
             objective = (
-                "Inspect the package version and available OSV evidence "
-                "to determine its vulnerability status."
+                "Download the exact pinned binary wheel, then inspect its "
+                "metadata in a network-disabled constrained Docker container "
+                "and compare it with available OSV evidence."
             )
 
         return {
@@ -140,15 +148,22 @@ class SecurityTestGenerator:
                 "osv_ids": package.get("osv_ids", []),
                 "purl": package.get("purl"),
             },
+            "checks": [
+                "WHEEL_INSTALLABLE",
+                "METADATA_MATCHES_PIN",
+                "OSV_RANGE_CLASSIFICATION",
+            ],
             "steps": [
-                "Identify the package in the project dependency files.",
-                "Determine its installed version.",
-                "Compare the version with the supplied OSV affected ranges.",
-                "Review the available fixed versions.",
+                "Use the exact package name and pinned version from the submitted scan.",
+                "Download only the exact binary wheel from PyPI; source distributions are rejected.",
+                "Install the local wheel in a resource-limited Docker container with network access disabled.",
+                "Read distribution metadata without importing the package or running project code.",
+                "Compare the container-reported version with the supplied OSV affected ranges and fixed versions.",
             ],
             "expected_result": (
-                "The installed package version is classified "
-                "consistently with the OSV vulnerability data."
+                "The exact binary wheel is installable, its distribution metadata "
+                "matches the scanned pin, and that version is classified against "
+                "the supplied OSV ranges."
             ),
             "safety": "NON_DESTRUCTIVE",
             "approval_status": "PENDING_APPROVAL",

@@ -67,7 +67,65 @@ def test_explain_returns_structured_result(sample_analysis):
     assert result["risk"] == sample_analysis["risk"]
     assert result["affected_packages"] == sample_analysis["affected_packages"]
     assert result["metadata"]["provider"] == "Mock"
+    assert result["validation_errors"] == []
+    assert result["validation_version"] == 2
     provider.generate.assert_called_once()
+
+
+def test_omissions_are_notes_not_blocking_errors(sample_analysis):
+    provider = Mock()
+    provider.generate.return_value = "A short explanation without every metric."
+
+    result = LLMExplanationAgent(provider=provider).explain(sample_analysis)
+
+    assert result["validation_warnings"]
+    assert result["validation_errors"] == []
+
+
+def test_explicit_mismatched_cvss_is_blocking(sample_analysis):
+    provider = Mock()
+    provider.generate.return_value = (
+        "CVE-2025-12345 has a CRITICAL CVSS score of 4.1. "
+        "The example-package version 1.0.0 is AFFECTED and OSV lists 1.0.2 as fixed. "
+        "The risk score is 85, EPSS score is 0.95 and EPSS percentile is 0.99. "
+        "It is listed in KEV."
+    )
+
+    result = LLMExplanationAgent(provider=provider).explain(sample_analysis)
+
+    assert any("cvss_score" in warning for warning in result["validation_errors"])
+
+
+def test_withholds_false_package_status_but_not_omitted_fixed_version(sample_analysis):
+    provider = Mock()
+    provider.generate.return_value = (
+        "CVE-2025-12345 is CRITICAL. The example-package version 1.0.0 "
+        "is not affected. The risk score is 85, CVSS score is 9.8, "
+        "EPSS score is 0.95 and EPSS percentile is 0.99. It is listed in KEV."
+    )
+
+    result = LLMExplanationAgent(provider=provider).explain(sample_analysis)
+
+    assert any("Package status contradiction" in item for item in result["validation_errors"])
+
+
+def test_retries_once_to_repair_kev_contradiction(sample_analysis):
+    provider = Mock()
+    provider.generate.side_effect = [
+        "CVE-2025-12345 is CRITICAL with score 85 and CVSS 9.8. "
+        "EPSS is 0.95 and its percentile is 0.99. It is listed in KEV. "
+        "The KEV status is unavailable. example-package 1.0.0 is AFFECTED; "
+        "version 1.0.2 is fixed.",
+        "CVE-2025-12345 is CRITICAL with score 85 and CVSS 9.8. "
+        "EPSS is 0.95 and its percentile is 0.99. It is listed in KEV. "
+        "example-package 1.0.0 is AFFECTED; OSV lists 1.0.2 as fixed.",
+    ]
+
+    result = LLMExplanationAgent(provider=provider).explain(sample_analysis)
+
+    assert provider.generate.call_count == 2
+    assert result["repair_attempts"] == 1
+    assert result["validation_errors"] == []
 
 
 def test_explain_builds_prompt_with_analysis_data(sample_analysis):

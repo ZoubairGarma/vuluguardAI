@@ -8,6 +8,7 @@ from confluent_kafka import Consumer, KafkaError, KafkaException
 from src.database.db import (
     initialize_database,
     mark_scan_failed,
+    save_scan_test_plan,
     save_scan_analysis_result,
     save_scan_event,
     update_scan_status,
@@ -34,6 +35,31 @@ KAFKA_TOPIC_SCAN_REQUESTS = os.getenv(
 KAFKA_GROUP_ID = os.getenv(
     "KAFKA_GROUP_ID", "vulnguard-scan-consumer-dev"
 )
+KAFKA_MAX_POLL_INTERVAL_MS = os.getenv(
+    "KAFKA_MAX_POLL_INTERVAL_MS", "900000"
+)
+
+
+def build_consumer_config() -> dict:
+    """Build Kafka settings with room for slow local LLM analysis."""
+    try:
+        max_poll_interval_ms = int(KAFKA_MAX_POLL_INTERVAL_MS)
+    except ValueError as exc:
+        raise ValueError(
+            "KAFKA_MAX_POLL_INTERVAL_MS must be a positive integer."
+        ) from exc
+    if max_poll_interval_ms <= 0:
+        raise ValueError(
+            "KAFKA_MAX_POLL_INTERVAL_MS must be a positive integer."
+        )
+
+    return {
+        "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
+        "group.id": KAFKA_GROUP_ID,
+        "auto.offset.reset": "earliest",
+        "enable.auto.commit": False,
+        "max.poll.interval.ms": max_poll_interval_ms,
+    }
 
 
 def process_scan_event(event):
@@ -76,7 +102,11 @@ def analyze_scan_event(event, analysis_service):
             f"Scan {scan_id} skipped: "
             f"current status is {current_status}."
         )
-        return None
+        return {
+            "scan_id": scan_id,
+            "status": current_status,
+            "skipped": True,
+        }
 
     process_scan_event(event)
 
@@ -87,6 +117,16 @@ def analyze_scan_event(event, analysis_service):
         )
 
         result_data = result.to_dict()
+
+        plans = result_data.get("security_test_plans", [])
+        reports = result_data.get("final_reports", [])
+        for plan, report in zip(plans, reports):
+            plan["final_report"] = report
+            save_scan_test_plan(
+                scan_id,
+                plan["cve_id"],
+                plan,
+            )
 
         # Persist all analysis outputs in SQLite.
         save_scan_analysis_result(scan_id, result_data)
@@ -133,12 +173,7 @@ def start_consumer():
         test_generator=SecurityTestGenerator(),
     )
 
-    consumer_config = {
-        "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
-        "group.id": KAFKA_GROUP_ID,
-        "auto.offset.reset": "earliest",
-        "enable.auto.commit": False,
-    }
+    consumer_config = build_consumer_config()
 
     consumer = Consumer(consumer_config)
     consumer.subscribe([KAFKA_TOPIC_SCAN_REQUESTS])
@@ -146,6 +181,10 @@ def start_consumer():
     print("VulnGuard AI consumer started.")
     print(f"Kafka topic: {KAFKA_TOPIC_SCAN_REQUESTS}")
     print(f"Kafka broker: {KAFKA_BOOTSTRAP_SERVERS}")
+    print(
+        "Maximum Kafka poll interval: "
+        f"{consumer_config['max.poll.interval.ms']} ms"
+    )
 
     try:
         while True:

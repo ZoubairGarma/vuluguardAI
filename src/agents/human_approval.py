@@ -3,6 +3,8 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict
 
+from src.contracts import validate_test_plan
+
 
 class HumanApprovalManager:
     """
@@ -79,6 +81,8 @@ class HumanApprovalManager:
 
         if not isinstance(test_plan, dict):
             raise TypeError("test_plan must be a dictionary")
+
+        validate_test_plan(test_plan)
 
         if not isinstance(reviewer, str) or not reviewer.strip():
             raise ValueError("A reviewer is required")

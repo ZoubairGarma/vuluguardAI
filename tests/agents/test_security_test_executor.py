@@ -191,3 +191,60 @@ def test_reports_running_and_final_states(executor, approved_plan):
 
     assert observed_states == ["RUNNING", "COMPLETED"]
     assert result["execution_status"] == "COMPLETED"
+
+
+def test_uses_isolated_installed_version_for_osv_comparison(approved_plan):
+    class IsolatedVerifier:
+        def verify(self, package_name, version):
+            assert package_name == "pip"
+            assert version == "1.0.0"
+            return {
+                "installed_version": "1.0.0",
+                "version_source": "DOCKER_ISOLATED_WHEEL_INSTALL",
+                "verification": "WHEEL_INSTALLED_METADATA_ONLY",
+                "container_network_access": False,
+                "project_code_executed": False,
+                "package_code_executed": False,
+            }
+
+    approved_plan["tests"][0]["evidence"]["affected_ranges"] = [
+        {
+            "type": "ECOSYSTEM",
+            "events": [{"introduced": "0"}, {"fixed": "2.0.0"}],
+        }
+    ]
+    approved_plan["tests"][0]["checks"] = [
+        "WHEEL_INSTALLABLE",
+        "METADATA_MATCHES_PIN",
+        "OSV_RANGE_CLASSIFICATION",
+    ]
+    executor = SecurityTestExecutor(isolated_verifier=IsolatedVerifier())
+
+    result = executor.execute(approved_plan)
+
+    checked = result["execution_results"][0]
+    assert checked["version_status"] == "AFFECTED"
+    assert checked["version_source"] == "DOCKER_ISOLATED_WHEEL_INSTALL"
+    assert checked["isolated_environment"]["project_code_executed"] is False
+    assert [item["status"] for item in checked["checks"]] == [
+        "PASSED",
+        "PASSED",
+        "PASSED",
+    ]
+
+
+def test_isolated_verification_failure_fails_the_plan(approved_plan):
+    class FailingVerifier:
+        def verify(self, package_name, version):
+            raise RuntimeError("Docker daemon unavailable")
+
+    executor = SecurityTestExecutor(isolated_verifier=FailingVerifier())
+
+    result = executor.execute(approved_plan)
+
+    assert result["execution_status"] == "FAILED"
+    assert result["execution_results"][0]["execution_status"] == "FAILED"
+    assert result["execution_results"][0]["declared_version"] == "1.0.0"
+    assert result["execution_results"][0]["installed_version"] is None
+    assert result["execution_results"][0]["version_source"] == "NOT_VERIFIED"
+    assert "Docker daemon unavailable" in result["execution_results"][0]["message"]

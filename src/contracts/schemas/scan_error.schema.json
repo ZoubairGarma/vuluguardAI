@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulnguard.local/contracts/scan-error-1.0.schema.json",
+  "title": "VulnGuard scan error event",
+  "type": "object",
+  "required": [
+    "error_id",
+    "event_type",
+    "schema_version",
+    "source_topic",
+    "error_type",
+    "raw_payload",
+    "details",
+    "received_at"
+  ],
+  "properties": {
+    "error_id": {"type": "string", "format": "uuid"},
+    "event_type": {"const": "scan_error"},
+    "schema_version": {"const": "1.0"},
+    "source_topic": {"type": "string", "minLength": 1},
+    "error_type": {"type": "string", "minLength": 1},
+    "raw_payload": {},
+    "details": {"type": "string"},
+    "received_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

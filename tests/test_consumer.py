@@ -1,5 +1,35 @@
 
-from src.streaming.consumer import process_scan_event
+import pytest
+
+from src.streaming.consumer import build_consumer_config, process_scan_event
+
+
+def test_consumer_poll_interval_allows_slow_llm(monkeypatch):
+    monkeypatch.setattr(
+        "src.streaming.consumer.KAFKA_MAX_POLL_INTERVAL_MS",
+        "900000",
+    )
+
+    assert build_consumer_config()["max.poll.interval.ms"] == 900000
+
+
+def test_consumer_poll_interval_can_be_configured(monkeypatch):
+    monkeypatch.setattr(
+        "src.streaming.consumer.KAFKA_MAX_POLL_INTERVAL_MS",
+        "1200000",
+    )
+
+    assert build_consumer_config()["max.poll.interval.ms"] == 1200000
+
+
+def test_consumer_rejects_invalid_poll_interval(monkeypatch):
+    monkeypatch.setattr(
+        "src.streaming.consumer.KAFKA_MAX_POLL_INTERVAL_MS",
+        "invalid",
+    )
+
+    with pytest.raises(ValueError, match="positive integer"):
+        build_consumer_config()
 
 
 def test_process_scan_event_displays_dependencies(
@@ -11,15 +41,12 @@ def test_process_scan_event_displays_dependencies(
 
     captured = capsys.readouterr()
 
-    assert "NEW VULNGUARD SCAN REQUEST" in captured.out
+    assert "NEW SCAN EVENT" in captured.out
 
     assert sample_event["scan_id"] in captured.out
 
     assert "test-python-project" in captured.out
-
-    assert "requests" in captured.out
-
-    assert "flask" in captured.out
+    assert "Dependencies: 2" in captured.out
 
 
 def test_process_scan_event_displays_project_name(

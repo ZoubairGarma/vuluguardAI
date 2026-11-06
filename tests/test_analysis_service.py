@@ -136,3 +136,57 @@ def test_official_analyzer_excludes_fixed_dependency_version():
         item["cve_id"] == "CVE-2026-54008"
         for item in result.vulnerabilities
     )
+
+
+def test_security_workflow_uses_langgraph_and_stops_before_execution():
+    finding = {
+        "cve_id": "CVE-2025-12345",
+        "risk": {"score": 75, "level": "HIGH", "is_kev": False},
+        "description": "Example finding.",
+        "affected_packages": [
+            {
+                "package_name": "sample-package",
+                "ecosystem": "PyPI",
+                "installed_version": "1.0.0",
+                "version_status": "AFFECTED",
+                "affected_ranges": [
+                    {
+                        "type": "ECOSYSTEM",
+                        "events": [{"introduced": "0"}, {"fixed": "2.0.0"}],
+                    }
+                ],
+                "fixed_versions": ["2.0.0"],
+            }
+        ],
+        "recommendations": ["Review the supplied OSV fix."],
+    }
+
+    class StubExplainer:
+        def explain(self, analysis):
+            return {
+                "cve_id": analysis["cve_id"],
+                "explanation": "Grounded sample explanation.",
+                "verified_facts": {
+                    "cve_id": analysis["cve_id"],
+                    "risk": analysis["risk"],
+                    "affected_packages": analysis["affected_packages"],
+                    "recommendations": analysis["recommendations"],
+                },
+                "validation_warnings": [],
+            }
+
+    service = AnalysisService(
+        enrichment_adapter=EnrichmentAdapter(lambda _: [finding]),
+        llm_explainer=StubExplainer(),
+    )
+
+    result = service.analyze_with_security_workflow(
+        "scan-langgraph",
+        DEPENDENCIES,
+    )
+
+    assert len(result.llm_explanations) == 1
+    assert len(result.security_test_plans) == 1
+    assert result.security_test_plans[0]["approval_status"] == "PENDING_APPROVAL"
+    assert result.security_test_plans[0]["execution_status"] == "NOT_STARTED"
+    assert result.final_reports[0]["workflow_status"] == "WAITING_APPROVAL"

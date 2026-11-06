@@ -4,6 +4,12 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 
+from src.contracts import (
+    validate_analysis_result,
+    validate_scan_request,
+    validate_test_plan,
+)
+
 
 # --------------------------------------------------
 # 1. DATABASE LOCATION
@@ -235,41 +241,11 @@ def validate_scan_event(event: dict):
     """
     Validate the structure of a scan event before inserting it.
     """
-
-    if not isinstance(event, dict):
-        raise ValueError("Scan event must be a dictionary.")
-
-    scan_id = event.get("scan_id")
-    project_name = event.get("project_name")
-    submitted_at = event.get("submitted_at")
-    dependencies = event.get("dependencies")
-
-    if not scan_id or not str(scan_id).strip():
-        raise ValueError("Missing scan_id.")
-
-    if event.get("event_type") != "scan_request":
-        raise ValueError("Invalid event type.")
-
-    if not project_name or not str(project_name).strip():
-        raise ValueError("Missing project name.")
-
-    if not submitted_at:
-        raise ValueError("Missing submission timestamp.")
-
-    if not isinstance(dependencies, list) or not dependencies:
-        raise ValueError("No dependencies provided.")
-
-    for dependency in dependencies:
-        if not isinstance(dependency, dict):
-            raise ValueError("Invalid dependency format.")
-
-        for field in ("ecosystem", "name", "version"):
-            value = dependency.get(field)
-
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(
-                    f"Missing or invalid dependency field: {field}"
-                )
+    event = validate_scan_request(event)
+    scan_id = event["scan_id"]
+    project_name = event["project_name"]
+    submitted_at = event["submitted_at"]
+    dependencies = event["dependencies"]
 
     return {
         "scan_id": str(scan_id).strip(),
@@ -503,6 +479,7 @@ def save_scan_test_plan(scan_id: str, cve_id: str, test_plan: dict) -> bool:
         ).fetchone()
         if scan is None:
             raise ValueError(f"Scan not found: {scan_id}")
+        validate_test_plan(test_plan)
 
         connection.execute(
             """
@@ -762,6 +739,8 @@ def save_scan_analysis_result(scan_id: str, result: dict) -> bool:
     result_scan_id = result.get("scan_id")
     if result_scan_id != str(scan_id).strip():
         raise ValueError("Analysis result scan_id does not match the target scan.")
+
+    validate_analysis_result(result)
 
     serialized_result = json.dumps(
         result,

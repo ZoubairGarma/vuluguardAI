@@ -24,6 +24,11 @@ def test_plan():
         "tests": [
             {
                 "test_id": "CVE-2023-0297-TEST-001",
+                "checks": [
+                    "WHEEL_INSTALLABLE",
+                    "METADATA_MATCHES_PIN",
+                    "OSV_RANGE_CLASSIFICATION",
+                ],
                 "approval_status": "PENDING_APPROVAL",
                 "execution_status": "NOT_STARTED",
             }

@@ -102,7 +102,7 @@ with left:
                 }
                 for scan in recent_scans
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     else:
@@ -123,7 +123,7 @@ with right:
         ]
         st.dataframe(
             errors_display,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     else:

@@ -1,0 +1,2 @@
+# Retest the CVE-2026-59221 package check with the isolated Python 3.12 verifier.
+open-webui==0.9.6

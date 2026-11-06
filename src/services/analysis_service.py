@@ -4,6 +4,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.contracts import validate_analysis_result
 from src.services.enrichment_adapter import (
     Dependency,
     EnrichmentAdapter,
@@ -24,18 +25,21 @@ class AnalysisResult:
     unresolved: list[dict[str, Any]] = field(default_factory=list)
     llm_explanations: list[dict[str, Any]] = field(default_factory=list)
     security_test_plans: list[dict[str, Any]] = field(default_factory=list)
+    final_reports: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a mapping for persistence/API use."""
-        return {
+        return validate_analysis_result({
             "scan_id": self.scan_id,
+            "schema_version": "1.0",
             "vulnerabilities": self.vulnerabilities,
             "risk_assessment": self.risk_assessment,
             "ml_prediction": self.ml_prediction,
             "unresolved": self.unresolved,
             "llm_explanations": self.llm_explanations,
             "security_test_plans": self.security_test_plans,
-        }
+            "final_reports": self.final_reports,
+        })
 
 
 class AnalysisService:
@@ -102,22 +106,16 @@ class AnalysisService:
         """
         result = self.analyze(scan_id, dependencies)
 
-        # Initialize these agents only when this workflow is requested.
-        if self._llm_explainer is None:
-            from src.agents.llm.ollama_provider import OllamaProvider
-            from src.agents.llm_explanation import LLMExplanationAgent
+        from src.agents.report_and_plan_agent import ReportAndPlanAgent
+        from src.agents.security_workflow_graph import run_security_workflow
 
-            self._llm_explainer = LLMExplanationAgent(
-                provider=OllamaProvider()
-            )
-
-        if self._test_generator is None:
-            from src.agents.security_test_generator import SecurityTestGenerator
-
-            self._test_generator = SecurityTestGenerator()
-
+        report_agent = ReportAndPlanAgent(
+            explainer=self._llm_explainer,
+            test_generator=self._test_generator,
+        )
         llm_explanations: list[dict[str, Any]] = []
         security_test_plans: list[dict[str, Any]] = []
+        final_reports: list[dict[str, Any]] = []
 
         for vulnerability in result.vulnerabilities:
             if not isinstance(vulnerability, dict):
@@ -152,6 +150,9 @@ class AnalysisService:
                         "is_kev": matching_risk.get("is_kev"),
                         "cvss_score": matching_risk.get("cvss_score_used"),
                         "cvss_severity": matching_risk.get("cvss_severity_used"),
+                        "cvss_source": matching_risk.get("cvss_provider"),
+                        "cvss_version": matching_risk.get("cvss_version_used"),
+                        "cvss_standard": matching_risk.get("cvss_source"),
                         "epss_score": matching_risk.get("epss_score_used"),
                         "epss_percentile": matching_risk.get("epss_percentile"),
                         "scoring_basis": matching_risk.get("scoring_basis"),
@@ -160,20 +161,17 @@ class AnalysisService:
 
             llm_input["risk"] = risk
 
-            explanation = self._llm_explainer.explain(llm_input)
-            if not isinstance(explanation, dict):
-                raise TypeError(
-                    "The LLM explanation agent must return a dictionary."
-                )
+            workflow_state = run_security_workflow(
+                {
+                    "scan_id": result.scan_id,
+                    "finding": llm_input,
+                },
+                report_agent=report_agent,
+            )
 
-            test_plan = self._test_generator.generate(vulnerability)
-            if not isinstance(test_plan, dict):
-                raise TypeError(
-                    "The security test generator must return a dictionary."
-                )
-
-            llm_explanations.append(explanation)
-            security_test_plans.append(test_plan)
+            llm_explanations.append(workflow_state["explanation"])
+            security_test_plans.append(workflow_state["test_plan"])
+            final_reports.append(workflow_state["final_report"])
 
         return AnalysisResult(
             scan_id=result.scan_id,
@@ -183,6 +181,7 @@ class AnalysisService:
             unresolved=result.unresolved,
             llm_explanations=llm_explanations,
             security_test_plans=security_test_plans,
+            final_reports=final_reports,
         )
 
     @staticmethod

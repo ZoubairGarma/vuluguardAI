@@ -158,7 +158,7 @@ def test_flags_missing_or_mismatched_source_metrics():
 
     assert any("cvss_score" in warning for warning in warnings)
     assert any("Package status contradiction" in warning for warning in warnings)
-    assert any("Fixed version missing" in warning for warning in warnings)
+    assert any("Fixed version omitted" in warning for warning in warnings)
 
 
 def test_accepts_complete_matching_facts():

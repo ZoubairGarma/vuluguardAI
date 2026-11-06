@@ -15,6 +15,17 @@ class LLMExplanationAgent:
     remains independently available in verified_facts.
     """
 
+    HARD_VALIDATION_PREFIXES = (
+        "KEV contradiction:",
+        "EPSS percentile contradiction:",
+        "Risk metric mismatch:",
+        "Risk metric contradiction:",
+        "Package status contradiction:",
+        "CVSS provenance contradiction:",
+        "Exploitability condition missing:",
+        "Fixed version contradiction:",
+    )
+
     def __init__(self, provider=None):
         self.provider = provider or OllamaProvider()
 
@@ -89,6 +100,15 @@ class LLMExplanationAgent:
         if not isinstance(risk, dict):
             risk = {}
 
+        legacy_cvss_source = risk.get("cvss_source")
+        cvss_source = risk.get("cvss_provider") or risk.get("cvss_origin")
+        cvss_standard = risk.get("cvss_standard") or risk.get("cvss_type")
+        if not cvss_standard and isinstance(legacy_cvss_source, str):
+            if re.fullmatch(r"CVSS_V[34]", legacy_cvss_source, re.IGNORECASE):
+                cvss_standard = legacy_cvss_source
+            elif not cvss_source:
+                cvss_source = legacy_cvss_source
+
         advisories = [
             {
                 "osv_id": advisory.get("osv_id"),
@@ -109,6 +129,9 @@ class LLMExplanationAgent:
                 "is_kev": risk.get("is_kev"),
                 "cvss_score": risk.get("cvss_score"),
                 "cvss_severity": risk.get("cvss_severity"),
+                "cvss_version": risk.get("cvss_version", risk.get("cvss_version_used")),
+                "cvss_source": cvss_source,
+                "cvss_standard": cvss_standard,
                 "epss_score": risk.get("epss_score"),
                 "epss_percentile": risk.get("epss_percentile"),
                 "scoring_basis": risk.get("scoring_basis"),
@@ -138,11 +161,15 @@ analysis data.
 STRICT DATA INTEGRITY RULES:
 
 1. Never invent or modify CVE identifiers, package names, versions,
-   CVSS scores, EPSS scores, percentiles, risk scores, or dates.
+   CVSS scores, versions or sources, EPSS scores, percentiles, risk scores,
+   or dates. Keep every CVSS score attached to its supplied version and
+   source; never combine scores from different sources.
 
 2. Treat all supplied values as authoritative.
    If a value is null or missing, say that it is unavailable.
    Never replace missing values with estimates.
+   Specifically: In "risk", "score" is the VulnGuard risk score. If "epss_score" is null
+   or missing, state that the EPSS score is unavailable. Never assign the value of "score" to "epss_score".
 
 3. Do not calculate or reconstruct vulnerability version ranges.
    The complete OSV ranges are deliberately not included in this prompt.
@@ -153,6 +180,11 @@ STRICT DATA INTEGRITY RULES:
 
 5. Do not claim that an installed package is vulnerable unless its
    version_status is explicitly "AFFECTED".
+   AFFECTED means the installed version matches a published affected range.
+   It does not by itself establish that the application calls vulnerable
+   code or is exploitable in its deployment. If the advisory limits exposure
+   to a function, API, feature, or usage pattern, state that condition and
+   do not generalize it to every application using the package.
 
 6. Interpret version_status as follows:
    - AFFECTED: the installed version is within a known affected range.
@@ -211,13 +243,21 @@ STRICT SECURITY RULES:
 - Report supplied OSV identifiers.
 - Report the exact package name and ecosystem.
 - Report the exact CVSS score and severity.
+- Report the supplied CVSS version and source with its score. If either is
+  unavailable, say so; do not substitute a value from another advisory.
 - Report the exact EPSS score and percentile.
 - Explain KEV status using is_kev:
   true means listed in the supplied CISA KEV snapshot.
   false means not listed in that snapshot.
-- Report the exact VulnGuard risk score and risk level.
+- Report the exact VulnGuard risk score (from "score") and risk level (from "level").
 - The VulnGuard score is a prioritization score, not a probability.
+- If epss_score is null or missing, state that EPSS is unavailable; never substitute the VulnGuard risk score for it.
 - EPSS is an estimated exploitation probability, not severity.
+- CRITICAL METRIC FORMATTING:
+  * Output the EXACT literal numbers provided in the source data for score, cvss_score, epss_score, and epss_percentile.
+  * DO NOT convert EPSS values to percentages (e.g. output 0.0014, NEVER 0.14%; output 0.49, NEVER 49%).
+  * DO NOT round, estimate, or change any number.
+  * DO NOT add denominators such as "/10" or "/100".
 - Describe impact only when the supplied description or advisory explicitly
   supports it. A vulnerability title or class alone is not enough to infer
   data theft, code execution, privilege escalation, or other consequences.
@@ -266,6 +306,9 @@ when the data does not establish this.
 Mention relevant missing or incomplete information.
 In particular, distinguish unavailable risk data from evidence
 that a vulnerability is rejected or harmless.
+Only say KEV status is unavailable when is_kev is null or missing.
+When is_kev is false, consistently say it is not listed in the supplied
+KEV snapshot; do not call KEV status unavailable in any section.
 
 Be precise, cautious, and technically accurate.
 Write the entire explanation in English only; do not mix languages.
@@ -375,6 +418,129 @@ Return a readable explanation, not JSON.
                     )
                     break
 
+        # Keep a CVSS value tied to the version and data source selected by
+        # the deterministic pipeline. A different source's score is not a
+        # substitute for the supplied score.
+        cvss_source = (
+            risk.get("cvss_provider")
+            or risk.get("cvss_origin")
+            or risk.get("cvss_source")
+        )
+        if isinstance(cvss_source, str) and re.fullmatch(
+            r"CVSS_V[34]", cvss_source, re.IGNORECASE
+        ):
+            # Older risk records used cvss_source to mean CVSS type, not origin.
+            cvss_source = None
+        cvss_version = risk.get("cvss_version", risk.get("cvss_version_used"))
+        cvss_sentences = [
+            sentence for sentence in sentences
+            if re.search(r"\bcvss\b", sentence)
+        ]
+        if cvss_source:
+            expected_source = str(cvss_source).strip().lower()
+            source_claim_pattern = re.compile(
+                r"\b(?:from|source(?:\s+is)?|provided\s+by|according\s+to)\s+([a-z0-9_.-]+)"
+            )
+            declared_sources = {
+                match.group(1).lower()
+                for sentence in cvss_sentences
+                for match in source_claim_pattern.finditer(sentence)
+            }
+            wrong_source_claim = any(
+                source != expected_source for source in declared_sources
+            )
+            source_is_present = any(
+                expected_source in sentence for sentence in cvss_sentences
+            )
+            if wrong_source_claim:
+                warnings.append(
+                    "CVSS provenance contradiction: the explanation attributes the CVSS score "
+                    f"to a source other than {cvss_source}."
+                )
+            elif not source_is_present:
+                warnings.append(
+                    "CVSS provenance omitted: the supplied CVSS source is not attached to the score."
+                )
+
+        if cvss_version is not None:
+            expected_version = (
+                str(cvss_version).strip().lower().removeprefix("cvss:")
+            )
+            version_pattern = re.compile(
+                r"\bcvss(?::|\s+(?:version\s+)?(?:is\s+)?)\s*v?(\d+\.\d+)\b"
+            )
+            stated_versions = {
+                match.group(1).lower()
+                for sentence in cvss_sentences
+                for match in version_pattern.finditer(sentence)
+            }
+            if stated_versions and expected_version not in stated_versions:
+                warnings.append(
+                    "CVSS provenance contradiction: the explanation gives a CVSS version "
+                    f"different from the supplied version {cvss_version}."
+                )
+            elif not stated_versions:
+                warnings.append(
+                    "CVSS provenance omitted: the supplied CVSS version is not attached to the score."
+                )
+
+        # Enforce advisory-specific exposure limits when they are explicit in
+        # the source. In particular, an affected Requests version alone does
+        # not show that an application invokes extract_zipped_paths directly.
+        advisories = verified_facts.get("advisories", [])
+        conditional_functions = []
+        if isinstance(advisories, list):
+            for advisory in advisories:
+                if not isinstance(advisory, dict):
+                    continue
+                advisory_text = " ".join(
+                    str(advisory.get(key) or "")
+                    for key in ("summary", "details")
+                )
+                match = re.search(
+                    r"\bextract_zipped_paths\b", advisory_text, re.IGNORECASE
+                )
+                if match and re.search(
+                    r"\bdirect(?:ly)?\b|\bonly\b",
+                    advisory_text,
+                    re.IGNORECASE,
+                ):
+                    conditional_functions.append(match.group(0))
+
+        for function_name in conditional_functions:
+            mentions_function = re.search(
+                rf"\b{re.escape(function_name)}\b", text, re.IGNORECASE
+            )
+            states_direct_call = re.search(r"\bdirect(?:ly)?\b", text)
+            states_normal_use_limit = re.search(
+                r"\b(?:standard|normal|default)\b.{0,60}"
+                r"\b(?:not affected|unaffected|not vulnerable)\b",
+                text,
+            )
+            if not (
+                mentions_function
+                and states_direct_call
+                and states_normal_use_limit
+            ):
+                warnings.append(
+                    "Exploitability condition missing: the advisory limits exposure to direct "
+                    f"use of {function_name}, while the explanation does not preserve that "
+                    "condition and the unaffected standard-use case."
+                )
+                continue
+
+            broad_application_claim = re.search(
+                r"\b(?:all|every|any)\s+(?:applications?|apps?)\s+"
+                r"(?:using|that\s+use|running)\s+requests\b"
+                r".{0,100}\b(?:vulnerable|affected|exploitable)\b",
+                text,
+            )
+            if broad_application_claim:
+                warnings.append(
+                    "Exploitability condition missing: the explanation says all applications "
+                    "using Requests are affected despite the advisory's direct-call requirement."
+                )
+
         # Require key source facts to be represented exactly enough to
         # detect omissions or conflicting values in the generated report.
         cve_id = verified_facts.get("cve_id")
@@ -383,31 +549,81 @@ Return a readable explanation, not JSON.
                 f"CVE identifier missing: the explanation does not include {cve_id}."
             )
 
-        numeric_fields = (
-            "score",
-            "cvss_score",
-            "epss_score",
-            "epss_percentile",
-        )
-        numeric_tokens = set()
-        for token in re.findall(r"(?<![\w.])-?\d+(?:\.\d+)?", text):
-            try:
-                numeric_tokens.add(Decimal(token).normalize())
-            except InvalidOperation:
+        for advisory in verified_facts.get("advisories", []) or []:
+            if not isinstance(advisory, dict):
                 continue
+            osv_id = advisory.get("osv_id")
+            if osv_id and str(osv_id).lower() not in text:
+                warnings.append(
+                    f"OSV identifier missing: the explanation does not include {osv_id}."
+                )
 
-        for field in numeric_fields:
+        metric_patterns = {
+            "score": re.compile(
+                r"\b(?:vulnguard|risk|prioritization|priority)\s+score\b"
+            ),
+            "cvss_score": re.compile(r"\bcvss(?:\s+v[34])?(?:\s+score)?\b"),
+            "epss_score": re.compile(r"\bepss\b(?!\s+percentile)"),
+            "epss_percentile": re.compile(r"\bepss\s+percentile\b|\bpercentile\b"),
+        }
+        metric_unavailable_patterns = {
+            "score": re.compile(
+                r"\b(?:vulnguard|risk|prioritization|priority)\s+score\b"
+            ),
+            "level": re.compile(r"\brisk\s+level\b"),
+            "cvss_score": re.compile(
+                r"\bcvss(?:\s+v[34])?\s+(?:score|rating)\b|"
+                r"\bcvss\s+(?:v?\d+\.\d+\s+)?(?:score|rating)\b"
+            ),
+            "cvss_severity": re.compile(r"\bcvss\s+severity\b"),
+            "epss_score": re.compile(r"\bepss\b(?!\s+percentile)"),
+            "epss_percentile": re.compile(r"\bepss\s+percentile\b"),
+        }
+
+        for field, metric_pattern in metric_unavailable_patterns.items():
+            if risk.get(field) is None:
+                continue
+            for sentence in sentences:
+                if metric_pattern.search(sentence) and unavailable_pattern.search(sentence):
+                    warnings.append(
+                        f"Risk metric contradiction: the explanation says the supplied "
+                        f"{field} value is unavailable, but the source provides it."
+                    )
+                    break
+
+        for field, metric_pattern in metric_patterns.items():
             expected = risk.get(field)
             if expected is None:
                 continue
+
+            metric_sentences = [
+                sentence for sentence in sentences
+                if metric_pattern.search(sentence)
+            ]
+            if not metric_sentences:
+                warnings.append(
+                    f"Risk metric omitted: the explanation does not mention "
+                    f"the supplied {field} value. The deterministic result remains authoritative."
+                )
+                continue
+
             try:
                 expected_number = Decimal(str(expected)).normalize()
             except InvalidOperation:
                 continue
-            if expected_number not in numeric_tokens:
+
+            stated_numbers = set()
+            for sentence in metric_sentences:
+                for token in re.findall(r"(?<![\w.])-?\d+(?:\.\d+)?", sentence):
+                    try:
+                        stated_numbers.add(Decimal(token).normalize())
+                    except InvalidOperation:
+                        continue
+
+            if expected_number not in stated_numbers:
                 warnings.append(
-                    f"Risk metric missing or mismatched: the supplied {field} "
-                    "value is not stated accurately in the explanation."
+                    f"Risk metric mismatch: the explanation states a value for "
+                    f"{field} that does not match the supplied data."
                 )
 
         level = risk.get("level")
@@ -434,6 +650,13 @@ Return a readable explanation, not JSON.
                     warnings.append(
                         f"Installed version missing: the supplied version for "
                         f"{package_name} ({installed_version}) is not mentioned."
+                    )
+
+                ecosystem = package.get("ecosystem")
+                if ecosystem and str(ecosystem).lower() not in text:
+                    warnings.append(
+                        f"Package ecosystem missing: {package_name} is not tied to "
+                        f"the supplied ecosystem {ecosystem}."
                     )
 
                 status = str(package.get("version_status") or "").upper()
@@ -468,12 +691,51 @@ Return a readable explanation, not JSON.
                     )
                     if not version_pattern.search(package_context):
                         warnings.append(
-                            f"Fixed version missing: the OSV-supplied version "
-                            f"{fixed_version} for {package_name} is not mentioned."
+                            f"Fixed version omitted: OSV supplies {fixed_version} "
+                            f"for {package_name}; see the deterministic recommendation."
                         )
+
+                # If the explanation names a fix or upgrade version, ensure
+                # it is one of OSV's fixes (or the supplied installed version).
+                fixed_versions = {
+                    str(version) for version in package.get("fixed_versions", []) or []
+                }
+                allowed_versions = fixed_versions | (
+                    {str(installed_version)} if installed_version else set()
+                )
+                fix_cue = re.compile(
+                    r"\b(?:fixed|fix|patched|patch|upgrade|upgraded|update|updated)\b"
+                )
+                version_token = re.compile(
+                    r"(?<![\w.-])v?\d+(?:\.\d+)+(?:[a-z0-9.+-]*)?(?![\w.-])",
+                    re.IGNORECASE,
+                )
+                for sentence in package_sentences:
+                    if not fix_cue.search(sentence):
+                        continue
+                    mentioned_versions = {
+                        token.group(0).lstrip("vV")
+                        for token in version_token.finditer(sentence)
+                    }
+                    unsupported_versions = mentioned_versions - allowed_versions
+                    if unsupported_versions:
+                        warnings.append(
+                            "Fixed version contradiction: the explanation gives a fix or "
+                            f"upgrade version for {package_name} that OSV does not supply."
+                        )
+                        break
 
         # Avoid repeating the same warning when multiple checks detect it.
         return list(dict.fromkeys(warnings))
+
+    @classmethod
+    def _blocking_validation_errors(cls, warnings: list[str]) -> list[str]:
+        """Return only contradictions that make the generated narrative unsafe to trust."""
+        return [
+            warning
+            for warning in warnings
+            if warning.startswith(cls.HARD_VALIDATION_PREFIXES)
+        ]
 
 
     def explain(self, analysis: dict) -> dict:
@@ -526,6 +788,32 @@ Return a readable explanation, not JSON.
             explanation,
             verified_facts,
         )
+        validation_errors = self._blocking_validation_errors(validation_warnings)
+        repair_attempts = 0
+
+        if validation_errors:
+            repair_attempts = 1
+            repair_prompt = (
+                prompt
+                + "\n\nCORRECTION REQUIRED: Your previous draft contradicted verified facts. "
+                + "Regenerate the complete explanation using only the source data above. "
+                + "Resolve every validation failure, including score provenance and "
+                + "advisory-specific exposure conditions:\n"
+                + json.dumps(validation_errors, ensure_ascii=False)
+                + "\nDo not say a field is unavailable when its supplied value is present. "
+                + "Return only the corrected six-section explanation."
+            )
+            corrected = self.provider.generate(repair_prompt)
+            if isinstance(corrected, str) and corrected.strip():
+                explanation = corrected.strip()
+                validation_warnings = self._validate_generated_explanation(
+                    explanation,
+                    verified_facts,
+                )
+                validation_errors = self._blocking_validation_errors(
+                    validation_warnings
+                )
+
         return {
             "cve_id": analysis["cve_id"],
             "explanation": explanation.strip(),
@@ -538,6 +826,9 @@ Return a readable explanation, not JSON.
             ),
             "verified_facts": verified_facts,
             "validation_warnings": validation_warnings,
+            "validation_errors": validation_errors,
+            "validation_version": 2,
+            "repair_attempts": repair_attempts,
             "metadata": {
                 "provider": self.provider.__class__.__name__,
                 "llm_generated": True,

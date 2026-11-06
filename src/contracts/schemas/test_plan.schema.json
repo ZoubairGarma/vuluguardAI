@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulnguard.local/contracts/test-plan-1.0.schema.json",
+  "title": "VulnGuard declarative package verification plan",
+  "type": "object",
+  "required": ["cve_id", "tests", "approval_status", "execution_status"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "cve_id": {"type": "string", "pattern": "^CVE-[0-9]{4}-[0-9]{4,}$"},
+    "total_tests": {"type": "integer", "minimum": 0},
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["test_id", "approval_status", "execution_status", "checks"],
+        "properties": {
+          "test_id": {"type": "string", "minLength": 1},
+          "cve_id": {"type": "string", "pattern": "^CVE-[0-9]{4}-[0-9]{4,}$"},
+          "test_type": {"const": "PACKAGE_VERSION_CHECK"},
+          "title": {"type": "string"},
+          "objective": {"type": "string"},
+          "target": {"type": "object"},
+          "evidence": {"type": "object"},
+          "checks": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "WHEEL_INSTALLABLE",
+                "METADATA_MATCHES_PIN",
+                "OSV_RANGE_CLASSIFICATION"
+              ]
+            },
+            "uniqueItems": true,
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "steps": {"type": "array", "items": {"type": "string"}},
+          "expected_result": {"type": "string"},
+          "safety": {"const": "NON_DESTRUCTIVE"},
+          "approval_status": {"enum": ["PENDING_APPROVAL", "APPROVED", "REJECTED"]},
+          "execution_status": {"enum": ["NOT_STARTED", "RUNNING", "COMPLETED", "FAILED"]},
+          "execution_result": {"type": "object"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "approval_status": {"enum": ["PENDING_APPROVAL", "APPROVED", "REJECTED"]},
+    "execution_status": {"enum": ["NOT_STARTED", "RUNNING", "COMPLETED", "FAILED"]},
+    "safety": {
+      "type": "object",
+      "properties": {
+        "non_destructive": {"const": true},
+        "automatic_execution": {"const": false},
+        "requires_human_approval": {"const": true}
+      },
+      "additionalProperties": true
+    },
+    "approval": {"type": ["object", "null"]},
+    "execution_results": {"type": "array", "items": {"type": "object"}},
+    "final_report": {"type": "object"}
+  },
+  "additionalProperties": true
+}

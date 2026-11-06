@@ -1,5 +1,6 @@
 
 import pytest
+from src.database import db
 
 from src.database.db import (
     initialize_database,
@@ -15,6 +16,12 @@ from datetime import datetime, timezone
 import uuid
 
 
+@pytest.fixture
+def isolated_status_database(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "status_test.db")
+    initialize_database()
+
+
 def create_test_scan():
 
     initialize_database()
@@ -24,6 +31,7 @@ def create_test_scan():
     event = {
         "scan_id": scan_id,
         "event_type": "scan_request",
+        "schema_version": "1.0",
         "project_name": "status-test-project",
         "submitted_at": datetime.now(
             timezone.utc
@@ -42,13 +50,14 @@ def create_test_scan():
     return scan_id
 
 
-def test_duplicate_scan_is_rejected():
+def test_duplicate_scan_is_rejected(isolated_status_database):
     initialize_database()
 
     scan_id = str(uuid.uuid4())
     event = {
         "scan_id": scan_id,
         "event_type": "scan_request",
+        "schema_version": "1.0",
         "project_name": "duplicate-check",
         "submitted_at": datetime.now(timezone.utc).isoformat(),
         "dependencies": [
@@ -64,14 +73,14 @@ def test_duplicate_scan_is_rejected():
     assert save_scan_event(event) is False
 
 
-def test_invalid_transition_raises_value_error():
+def test_invalid_transition_raises_value_error(isolated_status_database):
     scan_id = create_test_scan()
 
     with pytest.raises(ValueError, match="Invalid transition"):
         update_scan_status(scan_id, "COMPLETED", "Invalid test transition.")
 
 
-def test_failed_status_is_recorded_in_history():
+def test_failed_status_is_recorded_in_history(isolated_status_database):
     scan_id = create_test_scan()
 
     update_scan_status(scan_id, "WAITING_ANALYSIS", "Waiting for analysis.")

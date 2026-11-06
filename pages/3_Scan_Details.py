@@ -1,10 +1,8 @@
 
 import importlib
 import streamlit as st
-from src.agents.llm_explanation import LLMExplanationAgent
-from src.agents.security_test_generator import SecurityTestGenerator
-from src.agents.human_approval import HumanApprovalManager
-from src.agents.security_test_executor import SecurityTestExecutor
+from src.agents import llm_explanation as llm_explanation_module
+from src.agents.security_workflow_graph import run_security_workflow
 from src.database.queries import (
     get_scan_history,
     get_scan_details
@@ -13,6 +11,8 @@ from src.database.db import get_scan_test_plan, save_scan_test_plan
 from src.utils import ui
 
 importlib.reload(ui)
+importlib.reload(llm_explanation_module)
+LLMExplanationAgent = llm_explanation_module.LLMExplanationAgent
 
 
 st.set_page_config(
@@ -145,7 +145,7 @@ with dependencies_tab:
         ]
         st.dataframe(
             dependency_table,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     else:
@@ -164,6 +164,21 @@ with analysis_tab:
     else:
         findings = analysis_result.get("vulnerabilities", [])
         unresolved = analysis_result.get("unresolved", [])
+        stored_explanations = {
+            item.get("cve_id"): item
+            for item in analysis_result.get("llm_explanations", [])
+            if isinstance(item, dict)
+        }
+        stored_plans = {
+            item.get("cve_id"): item
+            for item in analysis_result.get("security_test_plans", [])
+            if isinstance(item, dict)
+        }
+        stored_reports = {
+            item.get("cve_id"): item
+            for item in analysis_result.get("final_reports", [])
+            if isinstance(item, dict)
+        }
         st.caption(f"Analyzed at: {analysis_result.get('analyzed_at', 'Unknown')}")
 
         result_col, unresolved_col = st.columns(2)
@@ -200,17 +215,37 @@ with analysis_tab:
                         except Exception as error:
                             st.error(f"Could not generate the explanation: {error}")
 
-                    if explanation_key in st.session_state:
-                        explanation_result = st.session_state[explanation_key]
+                    explanation_result = st.session_state.get(
+                        explanation_key,
+                        stored_explanations.get(cve_id, {}),
+                    ) or {}
+                    if explanation_result:
+                        verified_facts = explanation_result.get("verified_facts") or {
+                            "cve_id": cve_id,
+                            "risk": risk,
+                            "affected_packages": finding.get("affected_packages", []),
+                            "recommendations": finding.get("recommendations", []),
+                        }
+                        current_warnings = LLMExplanationAgent._validate_generated_explanation(
+                            explanation_result.get("explanation", ""),
+                            verified_facts,
+                        )
+                        current_errors = LLMExplanationAgent._blocking_validation_errors(
+                            current_warnings
+                        )
+                        explanation_result["validation_warnings"] = current_warnings
+                        explanation_result["validation_errors"] = current_errors
+                        explanation_result["validation_version"] = 2
                         st.markdown("**AI explanation**")
                         warnings = explanation_result.get("validation_warnings", [])
-                        if warnings:
+                        errors = explanation_result.get("validation_errors", [])
+                        if errors:
                             st.warning(
                                 "The explanation failed fact validation and is withheld. "
                                 "Use the deterministic findings below as the source of truth."
                             )
-                            for warning in warnings:
-                                st.write(f"- {warning}")
+                            for error in errors:
+                                st.write(f"- {error}")
                             with st.expander("View untrusted AI output"):
                                 st.write(explanation_result["explanation"])
                         else:
@@ -219,6 +254,10 @@ with analysis_tab:
                                 "AI-generated text can still be inaccurate. "
                                 "The deterministic findings remain the source of truth."
                             )
+                            if warnings:
+                                with st.expander("Validation notes (source facts remain authoritative)"):
+                                    for warning in warnings:
+                                        st.write(f"- {warning}")
 
                     packages = finding.get("affected_packages", [])
                     if packages:
@@ -234,7 +273,7 @@ with analysis_tab:
                                 }
                                 for package in packages
                             ],
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                         )
 
@@ -249,16 +288,25 @@ with analysis_tab:
 
                     st.markdown("**Optional security test plan**")
                     st.caption(
-                        "This rule-based plan is generated from verified analysis data. "
-                        "It is not executed unless you approve it and explicitly run it."
+                        "Agent 1 proposes a plan from verified analysis data. "
+                        "After approval, Agent 2 installs only the pinned PyPI wheel in a "
+                        "resource-limited Docker container and inspects package metadata. "
+                        "It does not import the package or run project code."
                     )
 
                     plan_key = f"test_plan_{selected_scan_id}_{cve_id}"
                     test_plan = st.session_state.get(plan_key)
                     if test_plan is None:
                         test_plan = get_scan_test_plan(selected_scan_id, cve_id)
+                    if test_plan is None:
+                        test_plan = stored_plans.get(cve_id)
                         if test_plan is not None:
-                            st.session_state[plan_key] = test_plan
+                            test_plan = dict(test_plan)
+                            if cve_id in stored_reports:
+                                test_plan["final_report"] = stored_reports[cve_id]
+                            save_scan_test_plan(selected_scan_id, cve_id, test_plan)
+                    if test_plan is not None:
+                        st.session_state[plan_key] = test_plan
 
                     if test_plan and test_plan.get("execution_status") == "RUNNING":
                         test_plan["execution_status"] = "FAILED"
@@ -276,14 +324,23 @@ with analysis_tab:
                         save_scan_test_plan(selected_scan_id, cve_id, test_plan)
                         st.session_state[plan_key] = test_plan
 
-                    if st.button(
-                        "Generate test plan",
+                    if test_plan is None and st.button(
+                        "Generate report and test plan",
                         key=f"generate_plan_{selected_scan_id}_{cve_id}",
                     ):
                         try:
-                            st.session_state[plan_key] = SecurityTestGenerator().generate(
-                                finding
-                            )
+                            with st.spinner("Agent 1 is preparing the report and plan..."):
+                                workflow_result = run_security_workflow(
+                                    {
+                                        "scan_id": selected_scan_id,
+                                        "finding": finding,
+                                    }
+                                )
+                            st.session_state[plan_key] = workflow_result["test_plan"]
+                            st.session_state[explanation_key] = workflow_result["explanation"]
+                            st.session_state[plan_key]["final_report"] = workflow_result[
+                                "final_report"
+                            ]
                             save_scan_test_plan(
                                 selected_scan_id,
                                 cve_id,
@@ -291,7 +348,7 @@ with analysis_tab:
                             )
                             st.rerun()
                         except Exception as error:
-                            st.error(f"Could not generate the test plan: {error}")
+                            st.error(f"Could not prepare the report and plan: {error}")
 
                     test_plan = st.session_state.get(plan_key)
                     if test_plan:
@@ -300,7 +357,14 @@ with analysis_tab:
                         if test_plan["approval_status"] == "REJECTED":
                             st.warning("The plan was rejected and cannot be executed.")
                         elif test_plan["approval_status"] == "APPROVED":
-                            if test_plan["execution_status"] == "NOT_STARTED":
+                            st.warning(
+                                "The Docker sandbox verifies the package wheel and its installed "
+                                "version only. It does not execute the scanned application or its tests."
+                            )
+                            final_report = test_plan.get("final_report", {})
+                            if final_report.get("workflow_status") == "FAILED":
+                                st.error("The verification stage failed. Review the final report.")
+                            elif test_plan["execution_status"] == "NOT_STARTED":
                                 st.success(
                                     f"Approved by {test_plan['approval']['reviewer']}. "
                                     "Execution has not started."
@@ -335,28 +399,50 @@ with analysis_tab:
 
                             if test_plan["approval_status"] == "PENDING_APPROVAL":
                                 reviewer = st.text_input(
-                                    "Reviewer name",
+                                    "Reviewer name *",
                                     key=f"reviewer_{selected_scan_id}_{cve_id}",
+                                    placeholder="e.g. sec-admin (required to approve or reject)",
                                 )
                                 rejection_reason = st.text_input(
-                                    "Reason for rejection (required to reject)",
+                                    "Reason for rejection (required only to reject)",
                                     key=f"reject_reason_{selected_scan_id}_{cve_id}",
+                                    placeholder="e.g. package not in active runtime path",
                                 )
                                 approve_col, reject_col = st.columns(2)
+
+                                has_reviewer = bool(reviewer and reviewer.strip())
+                                has_rejection_reason = bool(rejection_reason and rejection_reason.strip())
 
                                 if approve_col.button(
                                     "Approve plan",
                                     key=f"approve_plan_{selected_scan_id}_{cve_id}",
+                                    disabled=not has_reviewer,
+                                    help="Enter a reviewer name above to approve the plan." if not has_reviewer else None,
+                                    type="primary",
                                 ):
-                                    if not reviewer.strip():
+                                    if not has_reviewer:
                                         st.error("Enter a reviewer name before approving.")
                                     else:
                                         try:
-                                            st.session_state[plan_key] = (
-                                                HumanApprovalManager().approve(
-                                                    test_plan,
-                                                    reviewer=reviewer,
+                                            with st.spinner(
+                                                "Saving the plan approval..."
+                                            ):
+                                                workflow_result = run_security_workflow(
+                                                    {
+                                                        "scan_id": selected_scan_id,
+                                                        "finding": finding,
+                                                        "explanation": explanation_result,
+                                                        "test_plan": test_plan,
+                                                        "approval_decision": "APPROVE",
+                                                        "reviewer": reviewer.strip(),
+                                                        "stop_after_approval": True,
+                                                    },
                                                 )
+                                            st.session_state[plan_key] = workflow_result[
+                                                "test_plan"
+                                            ]
+                                            st.session_state[plan_key]["final_report"] = (
+                                                workflow_result["final_report"]
                                             )
                                             save_scan_test_plan(
                                                 selected_scan_id,
@@ -370,19 +456,31 @@ with analysis_tab:
                                 if reject_col.button(
                                     "Reject plan",
                                     key=f"reject_plan_{selected_scan_id}_{cve_id}",
+                                    disabled=not (has_reviewer and has_rejection_reason),
+                                    help="Enter both a reviewer name and a rejection reason to reject." if not (has_reviewer and has_rejection_reason) else None,
                                 ):
-                                    if not reviewer.strip() or not rejection_reason.strip():
+                                    if not has_reviewer or not has_rejection_reason:
                                         st.error(
                                             "Enter both a reviewer name and a rejection reason."
                                         )
                                     else:
                                         try:
-                                            st.session_state[plan_key] = (
-                                                HumanApprovalManager().reject(
-                                                    test_plan,
-                                                    reviewer=reviewer,
-                                                    reason=rejection_reason,
-                                                )
+                                            workflow_result = run_security_workflow(
+                                                {
+                                                    "scan_id": selected_scan_id,
+                                                    "finding": finding,
+                                                    "explanation": explanation_result,
+                                                    "test_plan": test_plan,
+                                                    "approval_decision": "REJECT",
+                                                    "reviewer": reviewer,
+                                                    "rejection_reason": rejection_reason,
+                                                }
+                                            )
+                                            st.session_state[plan_key] = workflow_result[
+                                                "test_plan"
+                                            ]
+                                            st.session_state[plan_key]["final_report"] = (
+                                                workflow_result["final_report"]
                                             )
                                             save_scan_test_plan(
                                                 selected_scan_id,
@@ -393,49 +491,64 @@ with analysis_tab:
                                         except Exception as error:
                                             st.error(f"Could not reject the plan: {error}")
 
-                            elif test_plan["approval_status"] == "APPROVED":
-                                st.warning(
-                                    "This check compares the dependency version declared in the scan "
-                                    "with OSV data. It does not inspect the project's runtime environment."
-                                )
-                                if test_plan["execution_status"] == "NOT_STARTED" and st.button(
-                                    "Run approved package-version check",
+                            elif (
+                                test_plan["approval_status"] == "APPROVED"
+                                and test_plan["execution_status"] in {"NOT_STARTED", "FAILED"}
+                                and st.button(
+                                    "Retry approved package-version check"
+                                    if test_plan["execution_status"] == "FAILED"
+                                    else "Run approved package-version check",
                                     key=f"execute_plan_{selected_scan_id}_{cve_id}",
-                                ):
-                                    try:
-                                        with st.spinner("Running approved check..."):
-                                            st.session_state[plan_key] = (
-                                                SecurityTestExecutor().execute(
-                                                    test_plan,
-                                                    on_status_change=lambda updated_plan: save_scan_test_plan(
-                                                        selected_scan_id,
-                                                        cve_id,
-                                                        updated_plan,
-                                                    ),
-                                                )
-                                            )
-                                            save_scan_test_plan(
+                                    type="primary",
+                                )
+                            ):
+                                try:
+                                    with st.spinner("Agent 2 is running the approved check..."):
+                                        workflow_result = run_security_workflow(
+                                            {
+                                                "scan_id": selected_scan_id,
+                                                "finding": finding,
+                                                "explanation": explanation_result,
+                                                "test_plan": test_plan,
+                                            },
+                                            on_status_change=lambda updated_plan: save_scan_test_plan(
                                                 selected_scan_id,
                                                 cve_id,
-                                                st.session_state[plan_key],
-                                            )
-                                        st.rerun()
-                                    except Exception as error:
-                                        st.error(f"Could not execute the approved check: {error}")
+                                                updated_plan,
+                                            ),
+                                        )
+                                    st.session_state[plan_key] = workflow_result[
+                                        "test_plan"
+                                    ]
+                                    st.session_state[plan_key]["final_report"] = (
+                                        workflow_result["final_report"]
+                                    )
+                                    save_scan_test_plan(
+                                        selected_scan_id,
+                                        cve_id,
+                                        st.session_state[plan_key],
+                                    )
+                                    st.rerun()
+                                except Exception as error:
+                                    st.error(f"Could not execute the approved check: {error}")
 
                             if test_plan.get("execution_results"):
                                 st.markdown("**Execution results**")
                                 st.dataframe(
                                     test_plan["execution_results"],
-                                    use_container_width=True,
+                                    width="stretch",
                                     hide_index=True,
                                 )
+
+                            if test_plan.get("final_report"):
+                                with st.expander("Final workflow report"):
+                                    st.json(test_plan["final_report"])
         else:
             st.success("No affected vulnerabilities were confirmed for this scan.")
 
         if unresolved:
             with st.expander("Review unresolved entries"):
-                st.dataframe(unresolved, use_container_width=True, hide_index=True)
+                st.dataframe(unresolved, width="stretch", hide_index=True)
 
 with workflow_tab:
     st.subheader("Status timeline")

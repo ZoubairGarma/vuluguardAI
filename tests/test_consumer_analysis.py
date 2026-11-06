@@ -24,13 +24,13 @@ class FakeAnalysisResult:
 
 
 class FakeAnalysisService:
-    def analyze(self, scan_id, dependencies):
+    def analyze_with_security_workflow(self, scan_id, dependencies):
         assert dependencies
         return FakeAnalysisResult(scan_id)
 
 
 class FailingAnalysisService:
-    def analyze(self, scan_id, dependencies):
+    def analyze_with_security_workflow(self, scan_id, dependencies):
         raise RuntimeError("sample analysis failure")
 
 

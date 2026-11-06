@@ -182,6 +182,22 @@ def select_cvss(row):
     return np.nan, None, "NONE"
 
 
+def _selected_cvss_version(row, cvss_type):
+    """Return the version of the selected CVSS vector, when recorded."""
+    if cvss_type == "CVSS_V3":
+        column = "cvss_v3_version"
+    elif cvss_type == "CVSS_V4":
+        column = "cvss_v4_version"
+    else:
+        return None
+
+    value = row.get(column)
+    if pd.isna(value):
+        return None
+    value = str(value).strip().removeprefix("CVSS:")
+    return value or None
+
+
 def calculate_risk(row):
     """
     Calculate an explainable risk-prioritization score.
@@ -194,7 +210,9 @@ def calculate_risk(row):
     cve_id = row["cve_id"]
     is_kev = row["is_kev"]
 
-    cvss_score, cvss_severity, cvss_source = select_cvss(row)
+    cvss_score, cvss_severity, cvss_type = select_cvss(row)
+    cvss_version = _selected_cvss_version(row, cvss_type)
+    cvss_provider = "OSV" if pd.notna(cvss_score) else None
     epss_score = row["epss_score"]
 
     if is_kev:
@@ -204,7 +222,9 @@ def calculate_risk(row):
             "risk_level": "CRITICAL",
             "cvss_score_used": cvss_score,
             "cvss_severity_used": cvss_severity,
-            "cvss_source": cvss_source,
+            "cvss_source": cvss_type,
+            "cvss_provider": cvss_provider,
+            "cvss_version_used": cvss_version,
             "epss_score_used": epss_score,
             "is_kev": True,
             "scoring_basis": "KEV_OVERRIDE",
@@ -221,8 +241,14 @@ def calculate_risk(row):
         available_components.append(
             (CVSS_WEIGHT, cvss_score / 10)
         )
+        version_label = (
+            f"CVSS {cvss_version}"
+            if cvss_version
+            else "CVSS version unavailable"
+        )
         explanation_parts.append(
-            f"{cvss_source} score is {cvss_score:.1f}/10"
+            f"{cvss_type} ({version_label}, source OSV) score is "
+            f"{cvss_score:.1f}/10"
         )
 
     if pd.notna(epss_score):
@@ -241,6 +267,8 @@ def calculate_risk(row):
             "cvss_score_used": np.nan,
             "cvss_severity_used": None,
             "cvss_source": "NONE",
+            "cvss_provider": None,
+            "cvss_version_used": None,
             "epss_score_used": np.nan,
             "is_kev": False,
             "scoring_basis": "NO_DATA",
@@ -290,7 +318,9 @@ def calculate_risk(row):
         "risk_level": risk_level,
         "cvss_score_used": cvss_score,
         "cvss_severity_used": cvss_severity,
-        "cvss_source": cvss_source,
+        "cvss_source": cvss_type,
+        "cvss_provider": cvss_provider,
+        "cvss_version_used": cvss_version,
         "epss_score_used": epss_score,
         "is_kev": False,
         "scoring_basis": scoring_basis,
@@ -391,6 +421,8 @@ def main():
         "risk_score",
         "risk_level",
         "cvss_source",
+        "cvss_provider",
+        "cvss_version_used",
         "epss_score_used",
         "is_kev",
     ]
