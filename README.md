@@ -149,3 +149,37 @@ running and host access to PyPI:
 ```powershell
 python -c "from src.agents.docker_sandbox_verifier import DockerSandboxVerifier; print(DockerSandboxVerifier().verify('requests', '2.31.0'))"
 ```
+
+## AI explanations
+
+Each finding's explanation has two parts:
+
+- **Verified sections, written by code.** Risk score, CVSS, EPSS, KEV status,
+  affected packages, installed and fixed versions, and recommendations are
+  rendered directly from the analyzer output, so they cannot be misquoted.
+- **AI narrative, written by the LLM.** A short JSON answer: a plain-language
+  summary of the advisory, the impact the advisory states, exposure
+  conditions, and limitations of the advisory text. The prompt contains no
+  scores or versions. The narrative is fact-checked; numbers that do not
+  appear in the source text are rejected. A failed narrative gets one repair
+  attempt and is withheld if it still fails, while the verified sections are
+  always shown.
+
+The model and its settings are read from `.env` (`OLLAMA_MODEL`,
+`OLLAMA_NUM_CTX`, `OLLAMA_TEMPERATURE`, `OLLAMA_SEED`, `OLLAMA_TIMEOUT`,
+`OLLAMA_BASE_URL`). Keep `OLLAMA_NUM_CTX` at 8192 or more: when a prompt does
+not fit, Ollama silently drops its beginning.
+
+### Compare models
+
+After running a few scans, compare models on the stored findings:
+
+```powershell
+ollama pull qwen2.5:3b
+python -m src.agents.evaluate_llm --models llama3.2:3b,qwen2.5:3b --limit 20
+```
+
+The script prints the share of narratives accepted (first try and after
+repair), withheld, and the average time per finding, and saves full results in
+`reports/`. Use `--findings file.json` to evaluate a list of findings instead
+of the database.

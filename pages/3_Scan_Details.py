@@ -236,7 +236,9 @@ with analysis_tab:
                         )
                         explanation_result["validation_warnings"] = current_warnings
                         explanation_result["validation_errors"] = current_errors
-                        explanation_result["validation_version"] = 2
+                        explanation_result["validation_version"] = (
+                            LLMExplanationAgent.VALIDATION_VERSION
+                        )
                         st.markdown("**AI explanation**")
                         warnings = explanation_result.get("validation_warnings", [])
                         errors = explanation_result.get("validation_errors", [])

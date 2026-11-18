@@ -191,3 +191,54 @@ def test_accepts_complete_matching_facts():
     assert LLMExplanationAgent._validate_generated_explanation(
         explanation, facts
     ) == []
+
+def test_quoting_unknown_risk_level_is_not_a_contradiction():
+    facts = {"risk": {"level": "UNKNOWN", "is_kev": None}}
+
+    warnings = LLMExplanationAgent._validate_generated_explanation(
+        "The risk level is UNKNOWN.",
+        facts,
+    )
+
+    assert warnings == []
+
+
+def test_version_at_end_of_sentence_matches_fixed_version():
+    facts = {
+        "risk": {},
+        "affected_packages": [
+            {
+                "package_name": "example-package",
+                "installed_version": "1.0.0",
+                "version_status": "AFFECTED",
+                "fixed_versions": ["1.0.2"],
+            }
+        ],
+    }
+
+    warnings = LLMExplanationAgent._validate_generated_explanation(
+        "Upgrade example-package version 1.0.0 to 1.0.2.",
+        facts,
+    )
+
+    assert not any("Fixed version contradiction" in item for item in warnings)
+
+
+def test_fixed_version_at_end_of_sentence_is_not_omitted():
+    facts = {
+        "risk": {},
+        "affected_packages": [
+            {
+                "package_name": "example-package",
+                "version_status": "AFFECTED",
+                "fixed_versions": ["1.0.2"],
+            }
+        ],
+    }
+
+    warnings = LLMExplanationAgent._validate_generated_explanation(
+        "OSV lists this fixed version for example-package: 1.0.2.",
+        facts,
+    )
+
+    assert not any("Fixed version omitted" in item for item in warnings)
